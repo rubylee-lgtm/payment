@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>付款申請｜UrMart 原型</title>
+    <link rel="stylesheet" href="css/styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand">UrMart</div>
+      <div class="user">Neo.Hsiung</div>
+    </header>
+
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="sidebar-title">財務會計</div>
+        <div class="sidebar-item">付款申請</div>
+        <div class="sidebar-item active">一般付款</div>
+      </aside>
+
+      <main class="main">
+        <h1 class="page-title">付款申請模組</h1>
+
+        <div class="config-bar">
+          <span class="badge">付款名稱資料源</span>
+          <span
+            >已載入 <strong id="vendor-count">0</strong> 筆選項（僅擷取
+            <strong>Customer Name</strong>）</span
+          >
+          <input
+            type="file"
+            id="file-config"
+            accept=".json,.csv,application/json,text/csv"
+          />
+          <button type="button" class="btn btn-default btn-sm" id="btn-download-sample">
+            開啟範例 JSON
+          </button>
+          <span id="config-msg" style="font-size: 13px; color: #595959"></span>
+        </div>
+
+        <!-- 列表頁 -->
+        <section id="application-list-page">
+          <div class="panel-toolbar">
+            <button type="button" class="btn btn-primary" id="btn-new-application">新增付款申請</button>
+          </div>
+          <div class="table-meta">
+            <div class="filter-row">
+              <input type="text" id="filter-applicant" placeholder="申請人（關鍵字）" />
+              <input type="date" id="filter-date-from" />
+              <input type="date" id="filter-date-to" />
+              <input type="text" id="filter-id" placeholder="申請單號" />
+              <button type="button" class="btn btn-default btn-sm" id="btn-filter-reset">清除篩選</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table" id="application-list-table">
+              <thead>
+                <tr>
+                  <th>申請單號</th>
+                  <th>申請人</th>
+                  <th>申請日期</th>
+                  <th>明細筆數</th>
+                  <th>總金額</th>
+                  <th>建立時間</th>
+                  <th>狀態</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="application-list-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- 主單/明細頁 -->
+        <section id="application-form-page" class="hidden">
+          <div class="panel-toolbar">
+            <div class="form-meta">
+              <span>單號：<strong id="meta-application-id">（尚未建立）</strong></span>
+              <span>狀態：<strong id="meta-application-status">draft</strong></span>
+            </div>
+            <button type="button" class="btn btn-default" id="btn-back-list">返回列表</button>
+          </div>
+
+          <div class="tabs" role="tablist">
+          <button type="button" class="tab active" data-tab="master" role="tab">
+            付款總覽
+          </button>
+          <button
+            type="button"
+            class="tab hidden"
+            id="tab-btn-detail"
+            data-tab="detail"
+            role="tab"
+            aria-hidden="true"
+          >
+            款項憑證明細
+          </button>
+          </div>
+
+          <!-- 主檔 -->
+          <section class="tab-panel active" data-panel="master" id="panel-master">
+          <div class="panel-toolbar">
+            <button type="button" class="btn btn-primary" id="btn-edit-detail">建立</button>
+          </div>
+
+          <div class="form-grid">
+            <label for="payCategory">付款類別</label>
+            <select id="payCategory">
+              <option value="GENERAL" selected>一般付款</option>
+              <option value="PETTY_CASH">零用金</option>
+              <option value="URGENT">急件付款</option>
+            </select>
+
+            <label for="applicant">申請人</label>
+            <div>
+              <input type="text" id="applicant" placeholder="請輸入申請人" />
+            </div>
+
+            <label for="applyDate">申請日</label>
+            <div>
+              <input type="date" id="applyDate" />
+              <p class="help-text" style="margin-top: 6px">
+                作為預計付款日計算基準；預設為今日，可依實際申請日調整。
+              </p>
+            </div>
+
+            <label for="vendor-search">付款名稱（供應商）</label>
+            <div class="combo-wrap">
+              <input
+                type="text"
+                id="vendor-search"
+                placeholder="搜尋或選擇供應商（資料來自上傳設定檔）"
+                autocomplete="off"
+              />
+              <input type="hidden" id="vendor-hidden" />
+              <ul class="combo-list" id="combo-list"></ul>
+              
+            </div>
+
+            <label for="currency">付款幣別</label>
+            <select id="currency">
+              <option>臺幣TWD</option>
+              <option>美元USD</option>
+              <option>英鎊GBP</option>
+              <option>澳元AUD</option>
+              <option>人民幣CNY</option>
+              <option>歐元EUR</option>
+              <option>港幣HK</option>
+            </select>
+
+            <label for="payMethod">付款方式</label>
+            <select id="payMethod">
+              <option value="匯款" selected>匯款</option>
+              <option value="開立支票">開立支票</option>
+              <option value="現金">現金</option>
+            </select>
+
+            <label for="transferFee" id="label-transfer-fee">匯款手續費</label>
+            <div id="row-transfer-fee">
+              <select id="transferFee">
+                <option>公司負擔</option>
+                <option>收款人負擔</option>
+              </select>
+            </div>
+
+            <label for="totalPayment">總付款金額（含稅）<span class="rule-title">預計付款日（需依付款類別限制）</span>
+            </label>
+            <input
+              type="text"
+              id="totalPayment"
+              class="readonly-field"
+              readonly
+              placeholder="待明細填寫後系統會自動加總"
+            />
+
+            <label for="expectedDate">預計付款日</label>
+            <div class="expected-date-block">
+              <input type="date" id="expectedDate" />
+              <div id="expected-date-rule" class="rule-info" aria-live="polite">
+                <span class="rule-title">預計付款日（需依付款類別限制）</span>
+                <ul class="rule-list">
+                  <li><strong>一般</strong>：申請日 + 5 天（預付）。</li>
+                  <li><strong>零用金</strong>：下一個週四（申請日若為週四，則為下週四）。</li>
+                  <li><strong>急件付款</strong>：須在申請日起 5 日內（含）。</li>
+                </ul>
+                <p id="expected-date-current-rule" class="rule-current"></p>
+              </div>
+              <p id="expected-date-error" class="field-error-msg hidden" role="alert"></p>
+            </div>
+          </div>
+          </section>
+
+          <!-- 明細 -->
+          <section class="tab-panel" data-panel="detail" id="panel-detail">
+          <div class="panel-toolbar">
+            <button type="button" class="btn btn-primary" id="btn-add-row">
+              ＋ 新增明細
+            </button>
+            <button type="button" class="btn btn-default" id="btn-submit">提交</button>
+          </div>
+
+          <div class="table-meta">
+            <span
+              >總共 <strong id="detail-total">0</strong> 筆，每頁顯示
+              <select id="page-size" disabled>
+                <option>20</option>
+              </select>
+              筆</span
+            >
+          </div>
+
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>款項用途</th>
+                  <th>備註單號</th>
+                  <th>憑證樣式</th>
+                  <th>憑證號碼</th>
+                  <th>是否應稅</th>
+                  <th>未稅金額</th>
+                  <th>稅額</th>
+                  <th>付款金額</th>
+                  <th>說明</th>
+                  <th>附件</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="detail-body"></tbody>
+            </table>
+          </div>
+
+          <p class="help-text" style="margin-top: 16px">
+            請點「＋ 新增明細」或列上「編輯」開啟浮窗填寫；本表僅顯示已儲存之摘要。稅額計算說明請見浮窗內提示。
+          </p>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <!-- 明細編輯浮窗 -->
+    <div
+      id="detail-modal"
+      class="modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="detail-modal-title"
+      hidden
+    >
+      <div class="modal-dialog">
+        <div class="modal-header">
+          <h2 id="detail-modal-title">新增明細</h2>
+          <button type="button" class="modal-close" id="detail-modal-close" aria-label="關閉">
+            ×
+          </button>
+        </div>
+        <div class="modal-body">
+          <div class="modal-form-grid">
+            <label for="modal-purpose">款項用途</label>
+            <select id="modal-purpose"></select>
+
+            <label for="modal-remarkNo" id="modal-remark-label">備註單號</label>
+            <div>
+              <input type="text" id="modal-remarkNo" placeholder="" autocomplete="off" />
+              <div id="modal-period-range" class="period-range hidden">
+                <input type="date" id="modal-period-start" />
+                <span>至</span>
+                <input type="date" id="modal-period-end" />
+              </div>
+            </div>
+
+            <label for="modal-voucherStyle">憑證樣式</label>
+            <select id="modal-voucherStyle"></select>
+
+            <label for="modal-voucherNo">憑證號碼</label>
+            <input type="text" id="modal-voucherNo" autocomplete="off" />
+
+            <label for="modal-taxType">是否應稅</label>
+            <select id="modal-taxType"></select>
+
+            <label for="modal-untaxed">未稅金額</label>
+            <input type="text" id="modal-untaxed" inputmode="decimal" autocomplete="off" />
+
+            <label for="modal-tax">稅額</label>
+            <input type="text" id="modal-tax" inputmode="decimal" autocomplete="off" />
+
+            <label for="modal-payAmount">付款金額</label>
+            <input type="text" id="modal-payAmount" class="readonly-field" readonly value="0.00" />
+
+            <label for="modal-note">說明</label>
+            <textarea id="modal-note" rows="2"></textarea>
+
+            <label for="modal-attachment">附件</label>
+            <input type="file" id="modal-attachment" />
+
+            <p class="modal-hint">
+              應稅：請填付款金額，系統回推未稅與稅額。未稅：請填未稅金額，系統計算稅額與付款金額。
+            </p>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-default" id="detail-modal-cancel">取消</button>
+          <button type="button" class="btn btn-primary" id="detail-modal-save">確定</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 建立主單浮窗 -->
+    <div
+      id="master-create-modal"
+      class="modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="master-create-modal-title"
+      hidden
+    >
+      <div class="modal-dialog" style="max-width: 480px">
+        <div class="modal-header">
+          <h2 id="master-create-modal-title">建立主單</h2>
+          <button
+            type="button"
+            class="modal-close"
+            id="master-create-modal-close"
+            aria-label="關閉"
+          >
+            ×
+          </button>
+        </div>
+        <div class="modal-body">
+          <div class="modal-form-grid">
+            <label for="master-modal-applicant">申請人</label>
+            <input type="text" id="master-modal-applicant" placeholder="請輸入申請人" />
+
+            <label for="master-modal-apply-date">申請日</label>
+            <input type="date" id="master-modal-apply-date" />
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-default" id="master-create-modal-cancel">取消</button>
+          <button type="button" class="btn btn-primary" id="master-create-modal-save">建立</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="js/app.js"></script>
+  </body>
+</html>

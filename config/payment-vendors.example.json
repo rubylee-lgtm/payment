@@ -1,0 +1,14 @@
+{
+  "$schema": "可含任意欄位，系統只使用每筆的 Customer Name 作為【付款名稱】選項",
+  "vendors": [
+    {
+      "code": "V001",
+      "Customer Name": "台灣理光股份有限公司",
+      "bankAccount": "****1234",
+      "note": "code、bankAccount 等欄位會被忽略"
+    },
+    {
+      "Customer Name": "饌元股份有限公司"
+    }
+  ]
+}
