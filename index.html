@@ -37,6 +37,25 @@
             開啟範例 JSON
           </button>
           <span id="config-msg" style="font-size: 13px; color: #595959"></span>
+
+          <span class="badge">零用金上限</span>
+          <input
+            type="number"
+            id="petty-cash-limit"
+            min="0"
+            step="1"
+            value="5000"
+            style="width: 120px"
+            aria-label="零用金上限（元）"
+          />
+          <button
+            type="button"
+            class="btn btn-default btn-sm"
+            id="btn-save-petty-cash-limit"
+          >
+            設定
+          </button>
+          <span id="petty-cash-limit-msg" style="font-size: 13px; color: #595959"></span>
         </div>
 
         <!-- 列表頁 -->
@@ -63,6 +82,8 @@
                   <th>明細筆數</th>
                   <th>總金額</th>
                   <th>建立時間</th>
+                  <th>財務預計付款日</th>
+                  <th>實際付款日</th>
                   <th>狀態</th>
                   <th>操作</th>
                 </tr>
@@ -119,12 +140,21 @@
           </div>
 
           <div class="form-grid">
-            <label for="payCategory">付款類別</label>
-            <select id="payCategory">
-              <option value="GENERAL" selected>一般付款</option>
-              <option value="PETTY_CASH">零用金</option>
-              <option value="URGENT">急件付款</option>
-            </select>
+            <p class="help-text" style="grid-column: 1 / -1; margin-bottom: 6px">
+              請問您本次申請的款項屬於哪一種情境？
+            </p>
+            <label for="payCategory">申請款項情境</label>
+            <div>
+              <select id="payCategory">
+                <option value="PETTY_CASH">個人代墊報支</option>
+                <option value="GENERAL" selected>廠商實報實銷</option>
+                <option value="PREPAY">廠商預付／訂金</option>
+              </select>
+              <div class="rule-info scenario-info" id="scenario-info" style="margin-top: 8px">
+                <span class="rule-title">廠商實報實銷（一般付款）</span>
+                已取得廠商開立的正式發票或收據，請公司直接匯款給該廠商。
+              </div>
+            </div>
 
             <label for="applicant">申請人</label>
             <div>
@@ -179,13 +209,16 @@
             </div>
 
             <label for="totalPayment">總付款金額（含稅）</label>
-            <input
-              type="text"
-              id="totalPayment"
-              class="readonly-field"
-              readonly
-              placeholder="待明細填寫後系統會自動加總"
-            />
+            <div>
+              <input
+                type="text"
+                id="totalPayment"
+                class="readonly-field"
+                readonly
+                placeholder="待明細填寫後系統會自動加總"
+              />
+              <p id="petty-amount-error" class="field-error-msg hidden" role="alert"></p>
+            </div>
 
             <label for="expectedDate">預計付款日</label>
             <div class="expected-date-block">
@@ -195,14 +228,16 @@
                 class="rule-info expected-date-rule"
                 aria-live="polite"
               >
-              <div class="rule-title">預計付款日（需依付款類別限制）</div>
+              <div class="rule-title">預計付款日（需依申請款項情境限制）</div>
                 <ul class="rule-list">
                   <li>
                     <strong>一般付款</strong>：每月21日~次月5日（含）之申請，付款日為次月15日；
                     每月6日~20日（含）之申請，付款日為當月30日。
                   </li>
                   <li><strong>零用金</strong>：下一個週四（申請日若為週四，則為下週四）。</li>
-                  <li><strong>急件付款</strong>：須在申請日起 5 日內（含）。</li>
+                  <li>
+                    <strong>預付款（或廠商預付／訂金）</strong>：須在申請日起 5 日內（含）。
+                  </li>
                 </ul>
                 <p id="expected-date-current-rule" class="rule-current"></p>
               </div>

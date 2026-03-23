@@ -4,7 +4,10 @@
 (function () {
   const STORAGE_KEY = "payment_vendor_config_v1";
   const APPLICATIONS_KEY = "payment_applications_v1";
+  const PETTY_CASH_LIMIT_KEY = "payment_petty_cash_limit_v1";
   const DEFAULT_APPLICANT = "ruby.lee";
+  const DEFAULT_PETTY_CASH_LIMIT = 5000;
+  let pettyCashLimit = DEFAULT_PETTY_CASH_LIMIT;
 
   const PURPOSE_OPTIONS = [
     "進貨款項(PO單)",
@@ -102,10 +105,16 @@
     "通路費用(通路後扣)": "both",
   };
 
+  function statusPillClass(statusKey) {
+    if (statusKey === APPLICATION_STATUS.PAID) return "paid";
+    return "";
+  }
+
   const PAYMENT_TYPE = {
     GENERAL: "GENERAL",
     PETTY_CASH: "PETTY_CASH",
     URGENT: "URGENT",
+    PREPAY: "PREPAY",
   };
 
   const APPLICATION_STATUS = {
@@ -113,6 +122,7 @@
     PENDING_APPROVAL: "pending_approval",
     APPROVED: "approved",
     REJECTED: "rejected",
+    PAID: "paid",
   };
 
   function parseInputDate(s) {
@@ -235,6 +245,52 @@
   function updateVendorBadge() {
     const el = $("#vendor-count");
     if (el) el.textContent = String(vendors.length);
+  }
+
+  function loadPettyCashLimitFromStorage() {
+    try {
+      const raw = localStorage.getItem(PETTY_CASH_LIMIT_KEY);
+      if (raw == null) return;
+      const n = Number(raw);
+      if (Number.isFinite(n) && n >= 0) pettyCashLimit = n;
+    } catch (e) {
+      console.warn(e);
+    }
+  }
+
+  function persistPettyCashLimitToStorage(value) {
+    localStorage.setItem(PETTY_CASH_LIMIT_KEY, String(value));
+  }
+
+  function syncPettyCashLimitInput() {
+    const el = $("#petty-cash-limit");
+    if (!el) return;
+    el.value = String(pettyCashLimit);
+  }
+
+  function initPettyCashLimitSetting() {
+    const input = $("#petty-cash-limit");
+    const btn = $("#btn-save-petty-cash-limit");
+    const msgEl = $("#petty-cash-limit-msg");
+    if (!input || !btn) return;
+
+    const showMsg = (s) => {
+      if (msgEl) msgEl.textContent = s;
+    };
+
+    btn.addEventListener("click", () => {
+      const n = Number(input.value);
+      if (!Number.isFinite(n) || n < 0) {
+        alert("零用金上限請輸入有效數字（>= 0）。");
+        showMsg("");
+        return;
+      }
+      pettyCashLimit = n;
+      persistPettyCashLimitToStorage(pettyCashLimit);
+      showMsg("已更新零用金上限。");
+      applyScenarioRules();
+      recalcPettyCapHint();
+    });
   }
 
   function loadApplications() {
@@ -392,6 +448,7 @@
     $("#expectedDate").value = master?.expectedDate || "";
     syncExpectedPaymentDate();
     initPaymentMethod();
+    applyScenarioRules();
   }
 
   function setMasterCreated(created) {
@@ -418,6 +475,7 @@
     if (status === APPLICATION_STATUS.PENDING_APPROVAL) return "待審核";
     if (status === APPLICATION_STATUS.APPROVED) return "審核通過";
     if (status === APPLICATION_STATUS.REJECTED) return "審核不通過";
+    if (status === APPLICATION_STATUS.PAID) return "已完成付款";
     return String(status);
   }
 
@@ -443,7 +501,8 @@
     return (
       app.status === APPLICATION_STATUS.PENDING_APPROVAL ||
       app.status === "submitted" ||
-      app.status === APPLICATION_STATUS.APPROVED
+      app.status === APPLICATION_STATUS.APPROVED ||
+      app.status === APPLICATION_STATUS.PAID
     );
   }
 
@@ -609,7 +668,7 @@
     const body = $("#application-list-body");
     const rows = getFilteredApplications();
     if (!rows.length) {
-      body.innerHTML = '<tr><td colspan="8" style="color:#8c8c8c">目前無資料</td></tr>';
+      body.innerHTML = '<tr><td colspan="10" style="color:#8c8c8c">目前無資料</td></tr>';
       return;
     }
     body.innerHTML = rows
@@ -626,11 +685,14 @@
                 ? "pending"
                 : statusKey === APPLICATION_STATUS.APPROVED
                   ? "approved"
+                  : statusKey === APPLICATION_STATUS.PAID
+                    ? "paid"
                   : statusKey === APPLICATION_STATUS.REJECTED
                     ? "rejected"
                     : "";
         const statusText = statusToLabel(statusKey);
         const rowCls = a.voided ? "row-voided" : "";
+        const actualPaymentDate = a.paidAt || a.actualPaymentDate || "";
         const canEdit =
           !a.voided &&
           (a.status === APPLICATION_STATUS.DRAFT ||
@@ -643,7 +705,10 @@
           !a.voided &&
           (a.status === APPLICATION_STATUS.PENDING_APPROVAL ||
             a.status === "submitted" ||
-            a.status === APPLICATION_STATUS.APPROVED);
+            a.status === APPLICATION_STATUS.APPROVED ||
+            a.status === APPLICATION_STATUS.PAID);
+        const canComplete =
+          !a.voided && a.status === APPLICATION_STATUS.APPROVED;
         return `<tr class="${rowCls}" data-app-id="${escapeHtml(a.applicationId)}">
           <td>${escapeHtml(a.applicationId)}</td>
           <td>${escapeHtml(a.master?.applicant || "")}</td>
@@ -651,11 +716,14 @@
           <td>${itemCount}</td>
           <td class="cell-num">${formatMoney(total)}</td>
           <td>${escapeHtml(formatDateTime(a.createdAt))}</td>
+          <td>${escapeHtml(a.master?.expectedDate || "")}</td>
+          <td>${escapeHtml(actualPaymentDate || "")}</td>
           <td><span class="status-pill ${statusClass}">${statusText}</span></td>
           <td class="col-actions">
             ${canEdit ? '<button type="button" class="link btn-row-edit">編輯</button>' : ''}
             ${canVoid ? '<button type="button" class="link btn-row-void">作廢</button>' : ''}
             ${canView ? '<button type="button" class="link btn-row-view">檢視</button>' : ''}
+            ${canComplete ? '<button type="button" class="link btn-row-complete">完成付款</button>' : ''}
           </td>
         </tr>`;
       })
@@ -670,6 +738,7 @@
       tr.querySelector(".btn-row-edit")?.addEventListener("click", () => openApplication(appId));
       tr.querySelector(".btn-row-void")?.addEventListener("click", () => voidApplication(appId));
       tr.querySelector(".btn-row-view")?.addEventListener("click", () => openApplication(appId));
+      tr.querySelector(".btn-row-complete")?.addEventListener("click", () => completePaymentApplication(appId));
     });
   }
 
@@ -688,13 +757,45 @@
   function voidApplication(appId) {
     const app = applications.find((x) => x.applicationId === appId);
     if (!app) return;
-    if (app.status !== APPLICATION_STATUS.DRAFT) {
+    if (app.status !== APPLICATION_STATUS.DRAFT && app.status !== APPLICATION_STATUS.REJECTED) {
       alert("已送出或進入審核流程不可作廢");
       return;
     }
     app.voided = true;
     saveApplications();
     renderApplicationList();
+  }
+
+  function completePaymentApplication(appId) {
+    const app = applications.find((x) => x.applicationId === appId);
+    if (!app) return;
+    if (app.status !== APPLICATION_STATUS.APPROVED) {
+      alert("目前狀態不可完成付款");
+      return;
+    }
+    const today = new Date();
+    const defaultDate = formatISODate(today);
+    const actualDate = prompt("請輸入實際付款日（YYYY-MM-DD）", defaultDate);
+    if (!actualDate) return;
+    // 基本檢核：只接受 YYYY-MM-DD
+    const ok = /^\d{4}-\d{2}-\d{2}$/.test(actualDate.trim());
+    if (!ok) {
+      alert("日期格式錯誤，請輸入 YYYY-MM-DD");
+      return;
+    }
+
+    app.paidAt = actualDate.trim();
+    app.actualPaymentDate = actualDate.trim();
+    app.status = APPLICATION_STATUS.PAID;
+    app.paidCompletedAt = nowIso();
+
+    saveApplications();
+    if (currentApplicationId === appId) {
+      setMasterCreated(true);
+      setFormMeta(app.applicationId, app.status);
+      renderFormState();
+    }
+    showListPage();
   }
 
   function upsertCurrentApplication(statusOverride) {
@@ -866,6 +967,8 @@
     });
     const el = $("#totalPayment");
     if (el) el.value = count > 0 ? formatMoney(sum) : "";
+    // 零用金上限提示需要跟著總金額更新
+    recalcPettyCapHint();
   }
 
   function clearDetailModalForm() {
@@ -987,7 +1090,8 @@
       }
     }
     if (!d.voucherNo) {
-      alert("請填寫憑證號碼");
+      const msg = d.voucherStyle === "發票" ? "請填寫發票號碼" : "請填寫憑證號碼";
+      alert(msg);
       $("#modal-voucherNo")?.focus();
       return;
     }
@@ -995,6 +1099,26 @@
       alert("請填寫未稅金額（須大於 0）");
       $("#modal-untaxed")?.focus();
       return;
+    }
+
+    // 零用金：總金額上限防呆（包含編輯情境時的精確加總）
+    if (getScenario() === PAYMENT_TYPE.PETTY_CASH) {
+      let sumOther = 0;
+      document
+        .querySelectorAll("#detail-body tr[data-row-id]")
+        .forEach((tr) => {
+          const rid = tr.dataset.rowId;
+          if (modalEditingRowId != null && String(rid) === String(modalEditingRowId)) return;
+          if (tr._detail && tr._detail.payAmount != null) sumOther += parseNum(String(tr._detail.payAmount));
+        });
+      const nextSum = sumOther + (d.payAmount || 0);
+      if (nextSum > pettyCashLimit) {
+        const msg = `超過零用金上限 ${pettyCashLimit.toLocaleString("zh-TW")} 元，請改走一般廠商付款流程，或先走專案簽呈。`;
+        $("#petty-amount-error").textContent = msg;
+        $("#petty-amount-error").classList.remove("hidden");
+        alert(msg);
+        return;
+      }
     }
 
     if (modalEditingRowId != null) {
@@ -1266,6 +1390,8 @@
     const lines = {
       [PAYMENT_TYPE.GENERAL]:
         "目前類別「一般」：依每月截止規則自動帶入（不可手動修改）。",
+      [PAYMENT_TYPE.PREPAY]:
+        "目前類別「預付款」：請在申請日起 5 日內（含）選擇預計付款日。",
       [PAYMENT_TYPE.PETTY_CASH]:
         "目前類別「零用金」：預計付款日已依「下一個週四」規則自動帶入（不可手動修改）。",
       [PAYMENT_TYPE.URGENT]:
@@ -1316,6 +1442,17 @@
       exp.classList.add("readonly-field");
       exp.removeAttribute("min");
       exp.removeAttribute("max");
+    } else if (type === PAYMENT_TYPE.PREPAY) {
+      // 預付款：須在申請日起 5 日內（含）
+      exp.readOnly = false;
+      exp.classList.remove("readonly-field");
+      const min = formatISODate(apply);
+      const max = formatISODate(addDays(apply, 5));
+      exp.min = min;
+      exp.max = max;
+      if (!exp.value || exp.value < min || exp.value > max) {
+        exp.value = min;
+      }
     } else if (type === PAYMENT_TYPE.URGENT) {
       exp.readOnly = false;
       exp.classList.remove("readonly-field");
@@ -1341,14 +1478,19 @@
     if (
       type !== PAYMENT_TYPE.GENERAL &&
       type !== PAYMENT_TYPE.PETTY_CASH &&
+      type !== PAYMENT_TYPE.PREPAY &&
       type !== PAYMENT_TYPE.URGENT
     ) {
       return { ok: false, msg: "無效的付款類別" };
     }
-    if (type === PAYMENT_TYPE.URGENT) {
+    if (type === PAYMENT_TYPE.URGENT || type === PAYMENT_TYPE.PREPAY) {
       const max = addDays(apply, 5);
       if (exp < apply || exp > max) {
-        return { ok: false, msg: "急件付款：預計付款日須在申請日起 5 日內（含）" };
+        const label = type === PAYMENT_TYPE.PREPAY ? "預付款" : "急件付款";
+        return {
+          ok: false,
+          msg: `${label}：預計付款日須在申請日起 5 日內（含）`,
+        };
       }
     }
     if (type === PAYMENT_TYPE.GENERAL) {
@@ -1357,7 +1499,7 @@
         return {
           ok: false,
           msg:
-            "一般付款：預計付款日依規則計算失敗（21~次月5=>次月15；6~20=>當月30）",
+            "一般付款：預計付款日依規則計算失敗（每月21~次月5=>次月15；每月6~20=>當月30）",
         };
       }
     }
@@ -1374,7 +1516,8 @@
   }
 
   function onExpectedDateUserInput() {
-    if ($("#payCategory").value !== PAYMENT_TYPE.URGENT) return;
+    const type = $("#payCategory").value;
+    if (type !== PAYMENT_TYPE.URGENT && type !== PAYMENT_TYPE.PREPAY) return;
     const r = validateExpectedPaymentDate();
     if (!r.ok) showExpectedDateError(r.msg);
     else clearExpectedDateError();
@@ -1389,10 +1532,129 @@
       new Date(today.getFullYear(), today.getMonth(), today.getDate())
     );
     sel.addEventListener("change", syncExpectedPaymentDate);
+    sel.addEventListener("change", applyScenarioRules);
     apply.addEventListener("change", syncExpectedPaymentDate);
     exp.addEventListener("change", onExpectedDateUserInput);
     exp.addEventListener("blur", onExpectedDateUserInput);
     syncExpectedPaymentDate();
+    applyScenarioRules();
+  }
+
+  function getScenario() {
+    return $("#payCategory")?.value || PAYMENT_TYPE.GENERAL;
+  }
+
+  function getEmployeeName() {
+    const v = $("#applicant")?.value || "";
+    return v.trim() || DEFAULT_APPLICANT;
+  }
+
+  function setVendorLocked(name) {
+    const input = $("#vendor-search");
+    const hidden = $("#vendor-hidden");
+    if (input) {
+      input.value = name;
+      input.setAttribute("disabled", "true");
+    }
+    if (hidden) hidden.value = name;
+    closeCombo();
+  }
+
+  function setVendorUnlocked() {
+    const input = $("#vendor-search");
+    if (input) {
+      input.removeAttribute("disabled");
+    }
+  }
+
+  function setPayMethodLocked(methodValue) {
+    const sel = $("#payMethod");
+    if (!sel) return;
+    sel.value = methodValue;
+    sel.setAttribute("disabled", "true");
+    // re-sync transfer fee row
+    const row = $("#row-transfer-fee");
+    const lab = $("#label-transfer-fee");
+    if (row) row.classList.toggle("hidden", methodValue !== "匯款");
+    if (lab) lab.classList.toggle("hidden", methodValue !== "匯款");
+  }
+
+  function setPayMethodUnlocked() {
+    const sel = $("#payMethod");
+    if (!sel) return;
+    sel.removeAttribute("disabled");
+    // sync transfer fee row based on current value
+    const methodValue = sel.value;
+    const row = $("#row-transfer-fee");
+    const lab = $("#label-transfer-fee");
+    if (row) row.classList.toggle("hidden", methodValue !== "匯款");
+    if (lab) lab.classList.toggle("hidden", methodValue !== "匯款");
+  }
+
+  function applyScenarioInfo() {
+    const box = $("#scenario-info");
+    const v = getScenario();
+    if (!box) return;
+    if (v === PAYMENT_TYPE.PETTY_CASH) {
+      box.querySelector(".rule-title").textContent = "個人代墊報支（零用金）";
+      box.innerHTML = "";
+      box.insertAdjacentHTML(
+        "afterbegin",
+        '<span class="rule-title">個人代墊報支（零用金）</span><div style="margin-top:4px">我已先用個人款項墊付餐費、車資、雜支等，請公司退款至我的薪資帳戶。</div>'
+      );
+    } else if (v === PAYMENT_TYPE.PREPAY) {
+      box.querySelector(".rule-title").textContent = "廠商預付／訂金（預付款）";
+      box.innerHTML = "";
+      box.insertAdjacentHTML(
+        "afterbegin",
+        '<span class="rule-title">廠商預付／訂金（預付款）</span><div style="margin-top:4px">目前僅有合約或報價單，需先申請款項支付給廠商，事後再補發票核銷。</div>'
+      );
+    } else {
+      // GENERAL
+      box.innerHTML =
+        '<span class="rule-title">廠商實報實銷（一般付款）</span><div style="margin-top:4px">已取得廠商開立的正式發票或收據，請公司直接匯款給該廠商。</div>';
+    }
+  }
+
+  function applyScenarioRules() {
+    // 1) 以情境進行畫面防呆（鎖定/解鎖）
+    const v = getScenario();
+    const applicantName = getEmployeeName();
+
+    $("#petty-amount-error")?.classList.add("hidden");
+    $("#petty-amount-error").textContent = "";
+
+    if (v === PAYMENT_TYPE.PETTY_CASH) {
+      // 強制鎖定收款人/付款名稱
+      setVendorLocked(applicantName);
+      // 強制鎖定付款方式：匯款
+      setPayMethodLocked("匯款");
+    } else {
+      setVendorUnlocked();
+      setPayMethodUnlocked();
+    }
+
+    if (v === PAYMENT_TYPE.PREPAY) {
+      // 預付款目前未要求額外防呆，沿用一般付款的畫面自由度
+      setVendorUnlocked();
+      setPayMethodUnlocked();
+    }
+
+    applyScenarioInfo();
+    recalcPettyCapHint();
+  }
+
+  function recalcPettyCapHint() {
+    const v = getScenario();
+    if (v !== PAYMENT_TYPE.PETTY_CASH) return;
+    const sum = parseNum($("#totalPayment").value || "");
+    if (sum > pettyCashLimit) {
+      $("#petty-amount-error").textContent = `超過零用金上限 ${pettyCashLimit.toLocaleString("zh-TW")} 元，請改走一般廠商付款流程或專案簽呈。`;
+      $("#petty-amount-error").classList.remove("hidden");
+    } else {
+      $("#petty-amount-error").classList.add("hidden");
+      $("#petty-amount-error").textContent = "";
+    }
   }
 
   function initPaymentMethod() {
@@ -1490,6 +1752,7 @@
       new Date(today.getFullYear(), today.getMonth(), today.getDate())
     );
     syncExpectedPaymentDate();
+    applyScenarioRules();
     clearExpectedDateError();
     clearDetailTable();
     setMasterCreated(false);
@@ -1540,6 +1803,19 @@
         alert("目前狀態不可送出審核");
         return;
       }
+
+      // 零用金上限再做一次保護（避免繞過明細儲存防呆）
+      if (getScenario() === PAYMENT_TYPE.PETTY_CASH) {
+        const sum = parseNum($("#totalPayment").value || "");
+        if (sum > pettyCashLimit) {
+          const msg = `超過零用金上限 ${pettyCashLimit.toLocaleString("zh-TW")} 元，請改走一般廠商付款流程，或專案簽呈。`;
+          $("#petty-amount-error").textContent = msg;
+          $("#petty-amount-error").classList.remove("hidden");
+          alert(msg);
+          return;
+        }
+      }
+
       const dt = validateExpectedPaymentDate();
       if (!dt.ok) {
         showExpectedDateError(dt.msg);
@@ -1561,6 +1837,19 @@
         alert("目前狀態不可審核通過");
         return;
       }
+      const current = $("#expectedDate")?.value || "";
+      const defaultDate = current || formatISODate(new Date());
+      const financeExpected = prompt("請輸入財務預期付款日（YYYY-MM-DD）", defaultDate);
+      if (!financeExpected) return;
+      const ok = /^\d{4}-\d{2}-\d{2}$/.test(financeExpected.trim());
+      if (!ok) {
+        alert("日期格式錯誤，請輸入 YYYY-MM-DD");
+        return;
+      }
+      $("#expectedDate").value = financeExpected.trim();
+      // 財務預期付款日由財務人員回壓決定，這裡只確認格式正確即可。
+      clearExpectedDateError();
+
       upsertCurrentApplication(APPLICATION_STATUS.APPROVED);
       const idx = applications.findIndex((x) => x.applicationId === currentApplicationId);
       if (idx >= 0) applications[idx].reviewNote = applications[idx].reviewNote || "";
@@ -1617,8 +1906,10 @@
 
   function init() {
     loadVendorsFromStorage();
+    loadPettyCashLimitFromStorage();
     loadApplications();
     updateVendorBadge();
+    syncPettyCashLimitInput();
     if (!vendors.length) {
       $("#config-msg").textContent =
         "尚未上傳設定檔。請上傳 JSON／CSV，或使用範例檔格式準備資料。";
@@ -1634,6 +1925,7 @@
     initFileUpload();
     initDetailModal();
     initMasterCreateModal();
+    initPettyCashLimitSetting();
     initMasterAutoSave();
     initActions();
     resetFormForNew();

@@ -422,6 +422,11 @@ table.data-table {
   color: #389e0d;
 }
 
+.status-pill.paid {
+  background: #e6f7ff;
+  color: #096dd9;
+}
+
 .status-pill.rejected {
   background: #fff1f0;
   color: #cf1322;
