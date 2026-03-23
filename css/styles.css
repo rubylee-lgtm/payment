@@ -412,6 +412,26 @@ table.data-table {
   color: #389e0d;
 }
 
+.status-pill.pending {
+  background: #e6f7ff;
+  color: #096dd9;
+}
+
+.status-pill.approved {
+  background: #f6ffed;
+  color: #389e0d;
+}
+
+.status-pill.rejected {
+  background: #fff1f0;
+  color: #cf1322;
+}
+
+.status-pill.draft {
+  background: #fafafa;
+  color: #595959;
+}
+
 .status-pill.voided {
   background: #fff1f0;
   color: #cf1322;
@@ -458,11 +478,25 @@ tr.row-voided {
 }
 
 .expected-date-block {
-  max-width: 480px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
 }
 
 .expected-date-block input[type="date"] {
-  max-width: 100%;
+  width: 180px;
+  max-width: 180px;
+}
+
+.expected-date-rule {
+  min-width: 0;
+  width: 100%;
+}
+
+#expected-date-error {
+  width: 100%;
+  margin: 8px 0 0;
 }
 
 .rule-info {

@@ -108,6 +108,13 @@
     URGENT: "URGENT",
   };
 
+  const APPLICATION_STATUS = {
+    DRAFT: "draft",
+    PENDING_APPROVAL: "pending_approval",
+    APPROVED: "approved",
+    REJECTED: "rejected",
+  };
+
   function parseInputDate(s) {
     if (!s || typeof s !== "string") return null;
     const p = s.trim().split("-");
@@ -147,6 +154,26 @@
     return d;
   }
 
+  /**
+   * 一般付款（GENERAL）：
+   * 以「申請日所屬區間」決定付款日：
+   * - 每月 21 日至次月 5 日（含）之申請，付款日為次月 15 日
+   * - 每月 6 日至 20 日（含）之申請，付款日為當月 30 日（若當月天數不足 30，取當月最後一天）
+   */
+  function calcGeneralExpectedDate(applyDate) {
+    const y = applyDate.getFullYear();
+    const m = applyDate.getMonth();
+    const day = applyDate.getDate();
+    const daysInMonth = new Date(y, m + 1, 0).getDate();
+
+    // day 1~5：落在「上個月21~本月5」區間，付款日為本月15
+    if (day <= 5) return new Date(y, m, 15);
+    // day 6~20：付款日為當月30
+    if (day <= 20) return new Date(y, m, Math.min(30, daysInMonth));
+    // day 21~31：付款日為次月15
+    return new Date(y, m + 1, 15);
+  }
+
   let vendors = [];
   let nextId = 1;
   let comboOpen = false;
@@ -154,6 +181,7 @@
   let applications = [];
   let currentApplicationId = null;
   let isMasterCreated = false;
+  let currentApplicationStatus = APPLICATION_STATUS.DRAFT;
 
   function $(sel, root) {
     return (root || document).querySelector(sel);
@@ -382,9 +410,99 @@
     }
   }
 
+  function statusToLabel(status) {
+    if (!status) return "draft";
+    if (status === "voided") return "作廢";
+    if (status === "submitted") return "待審核";
+    if (status === APPLICATION_STATUS.DRAFT) return "待申請";
+    if (status === APPLICATION_STATUS.PENDING_APPROVAL) return "待審核";
+    if (status === APPLICATION_STATUS.APPROVED) return "審核通過";
+    if (status === APPLICATION_STATUS.REJECTED) return "審核不通過";
+    return String(status);
+  }
+
   function setFormMeta(applicationId, status) {
     $("#meta-application-id").textContent = applicationId || "（尚未建立）";
-    $("#meta-application-status").textContent = status || "draft";
+    $("#meta-application-status").textContent = statusToLabel(status);
+  }
+
+  function getCurrentApplication() {
+    if (!currentApplicationId) return null;
+    return applications.find((x) => x.applicationId === currentApplicationId) || null;
+  }
+
+  function canEditApplication(app) {
+    if (!app) return false;
+    if (app.voided) return false;
+    return app.status === APPLICATION_STATUS.DRAFT || app.status === APPLICATION_STATUS.REJECTED;
+  }
+
+  function isReviewLocked(app) {
+    if (!app) return true;
+    if (app.voided) return true;
+    return (
+      app.status === APPLICATION_STATUS.PENDING_APPROVAL ||
+      app.status === "submitted" ||
+      app.status === APPLICATION_STATUS.APPROVED
+    );
+  }
+
+  function setReviewButtonsVisibility(app) {
+    const approveBtn = $("#btn-review-approve");
+    const rejectBtn = $("#btn-review-reject");
+    if (!approveBtn || !rejectBtn) return;
+    const show =
+      app &&
+      (app.status === APPLICATION_STATUS.PENDING_APPROVAL || app.status === "submitted") &&
+      !app.voided;
+    approveBtn.classList.toggle("hidden", !show);
+    rejectBtn.classList.toggle("hidden", !show);
+  }
+
+  function lockMasterFields(locked) {
+    const ids = [
+      "#applicant",
+      "#applyDate",
+      "#payCategory",
+      "#vendor-search",
+      "#currency",
+      "#payMethod",
+      "#transferFee",
+      "#expectedDate",
+    ];
+    ids.forEach((sel) => {
+      const el = $(sel);
+      if (!el) return;
+      if (locked) el.setAttribute("disabled", "true");
+      else el.removeAttribute("disabled");
+    });
+    const addRow = $("#btn-add-row");
+    if (addRow) {
+      addRow.disabled = locked || !isMasterCreated;
+      addRow.classList.toggle("hidden", locked);
+    }
+
+    const submitBtn = $("#btn-submit");
+    if (submitBtn) {
+      const app = getCurrentApplication();
+      submitBtn.disabled = !canEditApplication(app);
+      submitBtn.classList.toggle("hidden", locked);
+    }
+  }
+
+  function renderFormState() {
+    const app = getCurrentApplication();
+    currentApplicationStatus = app?.status || APPLICATION_STATUS.DRAFT;
+    const locked = isReviewLocked(app);
+    lockMasterFields(locked);
+    setReviewButtonsVisibility(app);
+
+    // 「建立」只給 draft / rejected 編輯者使用；pending_approval / approved 只可檢視
+    const btnCreate = $("#btn-edit-detail");
+    if (btnCreate) {
+      const canEdit = canEditApplication(app);
+      btnCreate.classList.toggle("hidden", !canEdit);
+    }
   }
 
   function openMasterCreateModal() {
@@ -433,14 +551,15 @@
       applicationId: appId,
       createdAt: nowIso(),
       updatedAt: nowIso(),
-      status: "draft",
+      status: APPLICATION_STATUS.DRAFT,
       voided: false,
       master: collectMasterForm(),
       items: [],
     });
     saveApplications();
     setMasterCreated(true);
-    setFormMeta(appId, "draft");
+    setFormMeta(appId, APPLICATION_STATUS.DRAFT);
+    renderFormState();
     closeMasterCreateModal();
     const tabBtn = $("#tab-btn-detail");
     tabBtn.classList.remove("hidden");
@@ -497,9 +616,34 @@
       .map((a) => {
         const total = (a.items || []).reduce((s, x) => s + parseNum(String(x.payAmount || 0)), 0);
         const itemCount = (a.items || []).length;
-        const statusClass = a.voided ? "voided" : a.status === "submitted" ? "submitted" : "";
-        const statusText = a.voided ? "voided" : a.status || "draft";
+        const statusKey = a.voided ? "voided" : a.status;
+        const statusClass =
+          statusKey === "voided"
+            ? "voided"
+            : statusKey === APPLICATION_STATUS.DRAFT
+              ? "draft"
+              : statusKey === APPLICATION_STATUS.PENDING_APPROVAL || statusKey === "submitted"
+                ? "pending"
+                : statusKey === APPLICATION_STATUS.APPROVED
+                  ? "approved"
+                  : statusKey === APPLICATION_STATUS.REJECTED
+                    ? "rejected"
+                    : "";
+        const statusText = statusToLabel(statusKey);
         const rowCls = a.voided ? "row-voided" : "";
+        const canEdit =
+          !a.voided &&
+          (a.status === APPLICATION_STATUS.DRAFT ||
+            a.status === APPLICATION_STATUS.REJECTED);
+        const canVoid =
+          !a.voided &&
+          (a.status === APPLICATION_STATUS.DRAFT ||
+            a.status === APPLICATION_STATUS.REJECTED);
+        const canView =
+          !a.voided &&
+          (a.status === APPLICATION_STATUS.PENDING_APPROVAL ||
+            a.status === "submitted" ||
+            a.status === APPLICATION_STATUS.APPROVED);
         return `<tr class="${rowCls}" data-app-id="${escapeHtml(a.applicationId)}">
           <td>${escapeHtml(a.applicationId)}</td>
           <td>${escapeHtml(a.master?.applicant || "")}</td>
@@ -509,8 +653,9 @@
           <td>${escapeHtml(formatDateTime(a.createdAt))}</td>
           <td><span class="status-pill ${statusClass}">${statusText}</span></td>
           <td class="col-actions">
-            <button type="button" class="link btn-row-edit">編輯</button>
-            <button type="button" class="link btn-row-void">作廢</button>
+            ${canEdit ? '<button type="button" class="link btn-row-edit">編輯</button>' : ''}
+            ${canVoid ? '<button type="button" class="link btn-row-void">作廢</button>' : ''}
+            ${canView ? '<button type="button" class="link btn-row-view">檢視</button>' : ''}
           </td>
         </tr>`;
       })
@@ -524,6 +669,7 @@
       });
       tr.querySelector(".btn-row-edit")?.addEventListener("click", () => openApplication(appId));
       tr.querySelector(".btn-row-void")?.addEventListener("click", () => voidApplication(appId));
+      tr.querySelector(".btn-row-view")?.addEventListener("click", () => openApplication(appId));
     });
   }
 
@@ -536,13 +682,14 @@
     renderDetailItems(app.items || []);
     setMasterCreated(true);
     setFormMeta(app.applicationId, app.voided ? "voided" : app.status);
+    renderFormState();
   }
 
   function voidApplication(appId) {
     const app = applications.find((x) => x.applicationId === appId);
     if (!app) return;
-    if (app.status === "submitted") {
-      alert("已送出單據不可作廢");
+    if (app.status !== APPLICATION_STATUS.DRAFT) {
+      alert("已送出或進入審核流程不可作廢");
       return;
     }
     app.voided = true;
@@ -556,13 +703,17 @@
     const items = getDetailItemsFromTable();
     const idx = applications.findIndex((x) => x.applicationId === currentApplicationId);
     if (idx < 0) return;
+    const nextStatus = statusOverride || applications[idx].status || APPLICATION_STATUS.DRAFT;
     applications[idx] = {
       ...applications[idx],
       master: { ...master, totalPayment: items.reduce((s, x) => s + parseNum(String(x.payAmount || 0)), 0) },
       items,
-      status: statusOverride || applications[idx].status || "draft",
+      status: nextStatus,
       updatedAt: nowIso(),
     };
+    if (statusOverride === APPLICATION_STATUS.PENDING_APPROVAL) {
+      applications[idx].submittedAt = nowIso();
+    }
     saveApplications();
     setFormMeta(currentApplicationId, applications[idx].status);
   }
@@ -741,6 +892,11 @@
     const modal = $("#detail-modal");
     const title = $("#detail-modal-title");
     const isEdit = editRowId != null && editRowId !== "";
+    const app = getCurrentApplication();
+    if (!canEditApplication(app)) {
+      alert("此單已進入審核流程，無法編輯明細");
+      return;
+    }
 
     if (isEdit) {
       const tr = document.querySelector(`#detail-body tr[data-row-id="${editRowId}"]`);
@@ -811,6 +967,11 @@
   }
 
   function saveDetailFromModal() {
+    const app = getCurrentApplication();
+    if (!canEditApplication(app)) {
+      alert("此單已進入審核流程，無法儲存明細");
+      return;
+    }
     const d = collectDetailFromModal();
     const rule = PURPOSE_RULES[d.purpose] || PURPOSE_RULES["其他費用"];
     if (rule.periodPicker) {
@@ -882,12 +1043,24 @@
 
   function bindSummaryRowActions(tr) {
     const rid = tr.dataset.rowId;
-    tr.querySelector(".btn-edit-row").addEventListener("click", () => openDetailModal(rid));
-    tr.querySelector(".btn-del-row").addEventListener("click", () => {
-      tr.remove();
-      updateDetailCount();
-      updateMasterTotal();
-    });
+    const editBtn = tr.querySelector(".btn-edit-row");
+    const delBtn = tr.querySelector(".btn-del-row");
+    const app = getCurrentApplication();
+    const canEdit = canEditApplication(app);
+    if (editBtn) {
+      editBtn.classList.toggle("hidden", !canEdit);
+      editBtn.addEventListener("click", () => openDetailModal(rid));
+    }
+    if (delBtn) {
+      delBtn.classList.toggle("hidden", !canEdit);
+      delBtn.addEventListener("click", () => {
+        if (!canEdit) return;
+        tr.remove();
+        updateDetailCount();
+        updateMasterTotal();
+        if (isMasterCreated && currentApplicationId) upsertCurrentApplication();
+      });
+    }
   }
 
   function initDetailModal() {
@@ -982,14 +1155,15 @@
           applicationId: currentApplicationId,
           createdAt: nowIso(),
           updatedAt: nowIso(),
-          status: "draft",
+          status: APPLICATION_STATUS.DRAFT,
           voided: false,
           master: collectMasterForm(),
           items: [],
         });
         saveApplications();
         setMasterCreated(true);
-        setFormMeta(currentApplicationId, "draft");
+        setFormMeta(currentApplicationId, APPLICATION_STATUS.DRAFT);
+        renderFormState();
       }
 
       if (tabBtn.classList.contains("hidden")) {
@@ -1091,7 +1265,7 @@
     const type = $("#payCategory").value;
     const lines = {
       [PAYMENT_TYPE.GENERAL]:
-        "目前類別「一般」：預計付款日已依「申請日 + 5 天」自動帶入（不可手動修改）。",
+        "目前類別「一般」：依每月截止規則自動帶入（不可手動修改）。",
       [PAYMENT_TYPE.PETTY_CASH]:
         "目前類別「零用金」：預計付款日已依「下一個週四」規則自動帶入（不可手動修改）。",
       [PAYMENT_TYPE.URGENT]:
@@ -1131,7 +1305,7 @@
       return;
     }
     if (type === PAYMENT_TYPE.GENERAL) {
-      exp.value = formatISODate(addDays(apply, 5));
+      exp.value = formatISODate(calcGeneralExpectedDate(apply));
       exp.readOnly = true;
       exp.classList.add("readonly-field");
       exp.removeAttribute("min");
@@ -1178,9 +1352,13 @@
       }
     }
     if (type === PAYMENT_TYPE.GENERAL) {
-      const want = addDays(apply, 5);
+      const want = calcGeneralExpectedDate(apply);
       if (formatISODate(exp) !== formatISODate(want)) {
-        return { ok: false, msg: "一般付款：預計付款日須為申請日後第 5 天" };
+        return {
+          ok: false,
+          msg:
+            "一般付款：預計付款日依規則計算失敗（21~次月5=>次月15；6~20=>當月30）",
+        };
       }
     }
     if (type === PAYMENT_TYPE.PETTY_CASH) {
@@ -1345,11 +1523,21 @@
         alert("請先建立主單，再新增明細");
         return;
       }
+      const app = getCurrentApplication();
+      if (!canEditApplication(app)) {
+        alert("此單已進入審核流程，無法編輯明細");
+        return;
+      }
       openDetailModal();
     });
     $("#btn-submit").addEventListener("click", () => {
       if (!isMasterCreated || !currentApplicationId) {
         alert("請先建立主單");
+        return;
+      }
+      const app = getCurrentApplication();
+      if (!canEditApplication(app)) {
+        alert("目前狀態不可送出審核");
         return;
       }
       const dt = validateExpectedPaymentDate();
@@ -1361,10 +1549,50 @@
         return;
       }
       clearExpectedDateError();
-      upsertCurrentApplication("submitted");
-      alert("已送出申請。\n總金額：" + ($("#totalPayment").value || ""));
+      upsertCurrentApplication(APPLICATION_STATUS.PENDING_APPROVAL);
+      alert("已送出申請，待財務審核。\n總金額：" + ($("#totalPayment").value || ""));
       showListPage();
     });
+
+    $("#btn-review-approve")?.addEventListener("click", () => {
+      const app = getCurrentApplication();
+      if (!app || app.voided) return;
+      if (app.status !== APPLICATION_STATUS.PENDING_APPROVAL && app.status !== "submitted") {
+        alert("目前狀態不可審核通過");
+        return;
+      }
+      upsertCurrentApplication(APPLICATION_STATUS.APPROVED);
+      const idx = applications.findIndex((x) => x.applicationId === currentApplicationId);
+      if (idx >= 0) applications[idx].reviewNote = applications[idx].reviewNote || "";
+      applications[idx].reviewedAt = nowIso();
+      saveApplications();
+      alert("審核通過");
+      showListPage();
+    });
+
+    $("#btn-review-reject")?.addEventListener("click", () => {
+      const app = getCurrentApplication();
+      if (!app || app.voided) return;
+      if (app.status !== APPLICATION_STATUS.PENDING_APPROVAL && app.status !== "submitted") {
+        alert("目前狀態不可審核不通過");
+        return;
+      }
+      const note = prompt("請輸入審核不通過原因（必填）");
+      if (!note || !note.trim()) {
+        alert("審核原因不可空白");
+        return;
+      }
+      upsertCurrentApplication(APPLICATION_STATUS.REJECTED);
+      const idx = applications.findIndex((x) => x.applicationId === currentApplicationId);
+      if (idx >= 0) {
+        applications[idx].reviewNote = note.trim();
+        applications[idx].reviewedAt = nowIso();
+      }
+      saveApplications();
+      alert("已回覆：審核不通過（可重新修改並送出）");
+      showListPage();
+    });
+
     $("#btn-back-list").addEventListener("click", () => {
       if (isMasterCreated && currentApplicationId) upsertCurrentApplication();
       showListPage();

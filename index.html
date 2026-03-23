@@ -9,7 +9,7 @@
   <body>
     <header class="app-header">
       <div class="brand">UrMart</div>
-      <div class="user">Neo.Hsiung</div>
+      <div class="user">ruby.lee</div>
     </header>
 
     <div class="app-shell">
@@ -101,7 +101,21 @@
           <!-- 主檔 -->
           <section class="tab-panel active" data-panel="master" id="panel-master">
           <div class="panel-toolbar">
-            <button type="button" class="btn btn-primary" id="btn-edit-detail">建立</button>
+            <button type="button" class="btn btn-primary" id="btn-edit-detail">確定</button>
+            <button
+              type="button"
+              class="btn btn-default hidden"
+              id="btn-review-approve"
+            >
+              審核通過
+            </button>
+            <button
+              type="button"
+              class="btn btn-default hidden"
+              id="btn-review-reject"
+            >
+              審核不通過
+            </button>
           </div>
 
           <div class="form-grid">
@@ -164,8 +178,7 @@
               </select>
             </div>
 
-            <label for="totalPayment">總付款金額（含稅）<span class="rule-title">預計付款日（需依付款類別限制）</span>
-            </label>
+            <label for="totalPayment">總付款金額（含稅）</label>
             <input
               type="text"
               id="totalPayment"
@@ -177,10 +190,17 @@
             <label for="expectedDate">預計付款日</label>
             <div class="expected-date-block">
               <input type="date" id="expectedDate" />
-              <div id="expected-date-rule" class="rule-info" aria-live="polite">
-                <span class="rule-title">預計付款日（需依付款類別限制）</span>
+              <div
+                id="expected-date-rule"
+                class="rule-info expected-date-rule"
+                aria-live="polite"
+              >
+              <div class="rule-title">預計付款日（需依付款類別限制）</div>
                 <ul class="rule-list">
-                  <li><strong>一般</strong>：申請日 + 5 天（預付）。</li>
+                  <li>
+                    <strong>一般付款</strong>：每月21日~次月5日（含）之申請，付款日為次月15日；
+                    每月6日~20日（含）之申請，付款日為當月30日。
+                  </li>
                   <li><strong>零用金</strong>：下一個週四（申請日若為週四，則為下週四）。</li>
                   <li><strong>急件付款</strong>：須在申請日起 5 日內（含）。</li>
                 </ul>
