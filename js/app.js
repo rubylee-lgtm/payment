@@ -1,7 +1,10 @@
 /**
  * 付款申請原型：主檔／明細頁籤、款項用途連動、付款名稱來自設定檔
+ * 版本號請與 README.md 首段「版本」欄位同步維護。
  */
 (function () {
+  const APP_VERSION = "1.0.0";
+
   const STORAGE_KEY = "payment_vendor_config_v1";
   const APPLICATIONS_KEY = "payment_applications_v1";
   const PETTY_CASH_LIMIT_KEY = "payment_petty_cash_limit_v1";
@@ -105,11 +108,6 @@
     "通路費用(通路後扣)": "both",
   };
 
-  function statusPillClass(statusKey) {
-    if (statusKey === APPLICATION_STATUS.PAID) return "paid";
-    return "";
-  }
-
   const PAYMENT_TYPE = {
     GENERAL: "GENERAL",
     PETTY_CASH: "PETTY_CASH",
@@ -123,6 +121,14 @@
     APPROVED: "approved",
     REJECTED: "rejected",
     PAID: "paid",
+    // PREPAY 核銷/結算流程（母子單勾稽）
+    WRITE_OFF_PENDING: "writeoff_pending", // 待核銷
+    PARTIAL_WRITE_OFF: "partial_writeoff", // 部分核銷（相容舊資料）
+    WRITE_OFF_AUDITING: "writeoff_auditing", // 核銷審核中（母單：子單待財務審）
+    WRITE_OFF_REVIEWING: "writeoff_reviewing", // 結算審核中（相容舊資料）
+    SETTLED: "settled", // 已結案
+    PAYMENT_PENDING: "payment_pending", // 待付款（母單審核通過後，出納付款前）
+    WRITE_OFF_REJECTED: "writeoff_rejected", // 被退件
   };
 
   function parseInputDate(s) {
@@ -471,12 +477,61 @@
     if (!status) return "draft";
     if (status === "voided") return "作廢";
     if (status === "submitted") return "待審核";
-    if (status === APPLICATION_STATUS.DRAFT) return "待申請";
+    if (status === APPLICATION_STATUS.DRAFT) return "草稿";
     if (status === APPLICATION_STATUS.PENDING_APPROVAL) return "待審核";
     if (status === APPLICATION_STATUS.APPROVED) return "審核通過";
     if (status === APPLICATION_STATUS.REJECTED) return "審核不通過";
-    if (status === APPLICATION_STATUS.PAID) return "已完成付款";
+    if (status === APPLICATION_STATUS.PAID) return "已完成";
+    if (status === APPLICATION_STATUS.WRITE_OFF_PENDING) return "待核銷";
+    if (status === APPLICATION_STATUS.PARTIAL_WRITE_OFF) return "部分核銷";
+    if (status === APPLICATION_STATUS.WRITE_OFF_AUDITING) return "核銷審核中";
+    if (status === APPLICATION_STATUS.WRITE_OFF_REVIEWING) return "結算審核中";
+    if (status === APPLICATION_STATUS.SETTLED) return "已結案";
+    if (status === APPLICATION_STATUS.PAYMENT_PENDING) return "待付款";
+    if (status === APPLICATION_STATUS.WRITE_OFF_REJECTED) return "被退件";
     return String(status);
+  }
+
+  /** 列表狀態標籤樣式 class（與 CSS .status-pill.st-* 對應） */
+  function statusPillClass(statusKey) {
+    if (!statusKey || statusKey === "voided") return "st-voided";
+    if (statusKey === APPLICATION_STATUS.DRAFT) return "st-draft";
+    if (statusKey === APPLICATION_STATUS.PENDING_APPROVAL || statusKey === "submitted") return "st-pending";
+    if (statusKey === APPLICATION_STATUS.REJECTED) return "st-rejected";
+    if (statusKey === APPLICATION_STATUS.APPROVED) return "st-approved";
+    if (statusKey === APPLICATION_STATUS.PAID) return "st-paid";
+    if (statusKey === APPLICATION_STATUS.WRITE_OFF_PENDING) return "st-writeoff-pending";
+    if (statusKey === APPLICATION_STATUS.PARTIAL_WRITE_OFF) return "st-partial-writeoff";
+    if (statusKey === APPLICATION_STATUS.WRITE_OFF_AUDITING) return "st-writeoff-auditing";
+    if (statusKey === APPLICATION_STATUS.WRITE_OFF_REVIEWING) return "st-writeoff-reviewing";
+    if (statusKey === APPLICATION_STATUS.SETTLED) return "st-settled";
+    if (statusKey === APPLICATION_STATUS.PAYMENT_PENDING) return "st-payment-pending";
+    if (statusKey === APPLICATION_STATUS.WRITE_OFF_REJECTED) return "st-writeoff-rejected";
+    return "st-default";
+  }
+
+  /** 明細頁籤已出現且為目前分頁時，才顯示頁籤列「提交」 */
+  function updateTabsSubmitVisibility() {
+    const wrap = $("#tabs-submit-actions");
+    const submitBtn = $("#btn-submit");
+    if (!wrap) return;
+    const tabDetail = $("#tab-btn-detail");
+    const detailPanel = $("#panel-detail");
+    const detailTabExists = tabDetail && !tabDetail.classList.contains("hidden");
+    const onDetailTab = detailPanel && detailPanel.classList.contains("active");
+    const app = getCurrentApplication();
+    const locked = app ? isReviewLocked(app) : true;
+    const show = isMasterCreated && detailTabExists && onDetailTab && !locked;
+    wrap.classList.toggle("hidden", !show);
+    if (submitBtn) submitBtn.disabled = !canEditApplication(app);
+  }
+
+  function payCategoryToLabel(payCategory) {
+    if (!payCategory) return "";
+    if (payCategory === PAYMENT_TYPE.PETTY_CASH) return "個人代墊報支";
+    if (payCategory === PAYMENT_TYPE.GENERAL) return "廠商實報實銷";
+    if (payCategory === PAYMENT_TYPE.PREPAY) return "廠商預付／訂金";
+    return String(payCategory);
   }
 
   function setFormMeta(applicationId, status) {
@@ -496,33 +551,38 @@
   }
 
   function isReviewLocked(app) {
-    if (!app) return true;
+    // 尚未建立／選取申請單（新增第二筆時 currentApplicationId 為 null）應可編輯，不可沿用上一筆鎖定狀態
+    if (!app) return false;
     if (app.voided) return true;
     return (
       app.status === APPLICATION_STATUS.PENDING_APPROVAL ||
       app.status === "submitted" ||
       app.status === APPLICATION_STATUS.APPROVED ||
-      app.status === APPLICATION_STATUS.PAID
+      app.status === APPLICATION_STATUS.PAID ||
+      // PREPAY 核銷流程：只讓使用者做「核銷/結算」操作，不開啟主檔/明細編輯
+      app.status === APPLICATION_STATUS.WRITE_OFF_PENDING ||
+      app.status === APPLICATION_STATUS.PARTIAL_WRITE_OFF ||
+      app.status === APPLICATION_STATUS.WRITE_OFF_AUDITING ||
+      app.status === APPLICATION_STATUS.WRITE_OFF_REVIEWING ||
+      app.status === APPLICATION_STATUS.SETTLED ||
+      app.status === APPLICATION_STATUS.PAYMENT_PENDING ||
+      app.status === APPLICATION_STATUS.WRITE_OFF_REJECTED
     );
   }
 
   function setReviewButtonsVisibility(app) {
-    const approveBtn = $("#btn-review-approve");
-    const rejectBtn = $("#btn-review-reject");
-    if (!approveBtn || !rejectBtn) return;
-    const show =
+    const wrap = $("#tabs-review-actions");
+    const isPendingReview =
       app &&
       (app.status === APPLICATION_STATUS.PENDING_APPROVAL || app.status === "submitted") &&
       !app.voided;
-    approveBtn.classList.toggle("hidden", !show);
-    rejectBtn.classList.toggle("hidden", !show);
+    if (wrap) wrap.classList.toggle("hidden", !isPendingReview);
   }
 
   function lockMasterFields(locked) {
     const ids = [
       "#applicant",
       "#applyDate",
-      "#payCategory",
       "#vendor-search",
       "#currency",
       "#payMethod",
@@ -535,18 +595,17 @@
       if (locked) el.setAttribute("disabled", "true");
       else el.removeAttribute("disabled");
     });
+    const payCat = $("#payCategory");
+    if (payCat) {
+      if (locked || isMasterCreated) payCat.setAttribute("disabled", "true");
+      else payCat.removeAttribute("disabled");
+    }
     const addRow = $("#btn-add-row");
     if (addRow) {
       addRow.disabled = locked || !isMasterCreated;
-      addRow.classList.toggle("hidden", locked);
+      addRow.classList.remove("hidden");
     }
 
-    const submitBtn = $("#btn-submit");
-    if (submitBtn) {
-      const app = getCurrentApplication();
-      submitBtn.disabled = !canEditApplication(app);
-      submitBtn.classList.toggle("hidden", locked);
-    }
   }
 
   function renderFormState() {
@@ -556,12 +615,638 @@
     lockMasterFields(locked);
     setReviewButtonsVisibility(app);
 
-    // 「建立」只給 draft / rejected 編輯者使用；pending_approval / approved 只可檢視
+    // 「建立」：僅在尚未建立主單時顯示；建立後隱藏（改以頁籤切換明細）
     const btnCreate = $("#btn-edit-detail");
     if (btnCreate) {
-      const canEdit = canEditApplication(app);
-      btnCreate.classList.toggle("hidden", !canEdit);
+      btnCreate.classList.toggle("hidden", isMasterCreated);
     }
+
+    // PREPAY 核銷/結算 UI（疊加式擴充）
+    applyWriteoffUI(app);
+
+    // PREPAY 核銷結算按鈕（在 writeoff tab 也要可用）
+    applyWriteoffReviewButtonsVisibility(app);
+
+    // PREPAY 子單：財務審核面板
+    applyChildReviewPanelUI(app);
+
+    updateTabsSubmitVisibility();
+  }
+
+  function getApplicationTotal(app) {
+    if (!app) return 0;
+    const itemsTotal = (app.items || []).reduce((s, x) => s + parseNum(String(x.payAmount || 0)), 0);
+    if (itemsTotal > 0) return itemsTotal;
+    return parseNum(String(app.master?.totalPayment ?? 0));
+  }
+
+  function getRemainingBalanceForApp(app) {
+    const v = app?.remainingBalance;
+    if (v != null && v !== "") return parseNum(String(v));
+    // 若為 PREPAY 母單且尚未寫入 remainingBalance，先用總金額推算
+    if (app?.master?.payCategory === PAYMENT_TYPE.PREPAY) return getApplicationTotal(app);
+    return 0;
+  }
+
+  function isPrepayApplication(app) {
+    return !!app?.master && app.master.payCategory === PAYMENT_TYPE.PREPAY;
+  }
+
+  function isPrepayMother(app) {
+    return isPrepayApplication(app) && (app.parentId == null);
+  }
+
+  /** 預付母單：須財務審核通過後才顯示「核銷紀錄」頁籤（草稿／待審／退件不顯示） */
+  function canShowPrepayWriteoffTab(app) {
+    if (!app || !isPrepayMother(app) || app.voided) return false;
+    const s = app.status;
+    return (
+      s === APPLICATION_STATUS.APPROVED ||
+      s === APPLICATION_STATUS.PAID ||
+      s === APPLICATION_STATUS.WRITE_OFF_PENDING ||
+      s === APPLICATION_STATUS.PARTIAL_WRITE_OFF ||
+      s === APPLICATION_STATUS.WRITE_OFF_AUDITING ||
+      s === APPLICATION_STATUS.WRITE_OFF_REVIEWING ||
+      s === APPLICATION_STATUS.SETTLED ||
+      s === APPLICATION_STATUS.WRITE_OFF_REJECTED
+    );
+  }
+
+  function getWriteoffChildren(parentId) {
+    if (!parentId) return [];
+    return applications
+      .filter((a) => a.parentId === parentId)
+      .sort((x, y) => String(y.createdAt || "").localeCompare(String(x.createdAt || "")));
+  }
+
+  function renderWriteoffHistoryTable(motherApp) {
+    const body = $("#writeoff-history-body");
+    if (!body) return;
+    const children = getWriteoffChildren(motherApp?.applicationId);
+    if (!children.length) {
+      body.innerHTML =
+        '<tr><td colspan="3" style="color:#8c8c8c">目前無核銷紀錄</td></tr>';
+      return;
+    }
+    body.innerHTML = children
+      .map((c) => {
+        const childId = c.applicationId || "";
+        const amount = getApplicationTotal(c);
+        const statusText = escapeHtml(statusToLabel(c.status));
+        return `<tr>
+          <td>${escapeHtml(childId)}</td>
+          <td class="cell-num">${formatMoney(amount)}</td>
+          <td>${statusText}</td>
+        </tr>`;
+      })
+      .join("");
+  }
+
+  function applyWriteoffUI(app) {
+    const meta = $("#meta-remaining-balance");
+    const tabBtn = $("#tab-btn-writeoff");
+    const panel = $("#panel-writeoff");
+    const addBtn = $("#btn-add-writeoff");
+    const groupTitle = $("#writeoff-group-title");
+    const groupParentId = $("#writeoff-group-parent-id");
+    const groupRemaining = $("#writeoff-group-remaining");
+
+    if (!meta || !tabBtn || !panel || !addBtn) return;
+
+    if (app && isPrepayMother(app)) {
+      const showWriteoffTab = canShowPrepayWriteoffTab(app);
+      tabBtn.classList.toggle("hidden", !showWriteoffTab);
+      if (!showWriteoffTab) {
+        meta.classList.add("hidden");
+        if (groupTitle) groupTitle.classList.add("hidden");
+        addBtn.classList.add("hidden");
+        const panelWriteoff = $("#panel-writeoff");
+        if (panelWriteoff && panelWriteoff.classList.contains("active")) {
+          document.querySelector('.tab[data-tab="master"]')?.click();
+        }
+      } else {
+        const remaining = getRemainingBalanceForApp(app);
+        meta.classList.remove("hidden");
+        meta.querySelector("strong") && (meta.querySelector("strong").textContent = formatMoney(remaining));
+        if (groupTitle) groupTitle.classList.remove("hidden");
+        if (groupParentId) groupParentId.textContent = app.applicationId;
+        if (groupRemaining) groupRemaining.textContent = formatMoney(remaining);
+        renderWriteoffHistoryTable(app);
+        const hideAdd =
+          app.status === APPLICATION_STATUS.WRITE_OFF_REVIEWING ||
+          app.status === APPLICATION_STATUS.SETTLED ||
+          app.status === APPLICATION_STATUS.PAID;
+        addBtn.classList.toggle("hidden", hideAdd);
+      }
+    } else {
+      meta.classList.add("hidden");
+      tabBtn.classList.add("hidden");
+      panel.classList.add("hidden");
+      addBtn.classList.add("hidden");
+      if (groupTitle) groupTitle.classList.add("hidden");
+    }
+  }
+
+  function applyWriteoffReviewButtonsVisibility(app) {
+    const btn = $("#btn-review-writeoff-approve");
+    if (!btn) return;
+    btn.classList.add("hidden");
+  }
+
+  function getWriteoffAttributeLabel(childType) {
+    if (!childType) return "";
+    if (childType === "WRITE_OFF") return "一般核銷";
+    if (childType === "GENERAL") return "補尾款";
+    if (childType === "REFUND") return "退款單";
+    return String(childType);
+  }
+
+  function applyChildReviewPanelUI(app) {
+    const panel = $("#child-review-panel");
+    if (!panel) return;
+
+    // 子單：parentId 不為 null
+    const isChild = !!app && app.parentId != null;
+    const eligible =
+      isChild &&
+      (app.status === APPLICATION_STATUS.PENDING_APPROVAL || app.status === "submitted");
+
+    if (!eligible) {
+      panel.classList.add("hidden");
+      return;
+    }
+
+    const mother = applications.find((x) => x.applicationId === app.parentId);
+    $("#child-review-parent-id").textContent = mother?.applicationId || String(app.parentId || "");
+    $("#child-review-attribute").textContent = getWriteoffAttributeLabel(app.type);
+
+    panel.classList.remove("hidden");
+  }
+
+  function activateWriteoffTabIfNeeded(app) {
+    if (!app || !isPrepayMother(app) || !canShowPrepayWriteoffTab(app)) return;
+    const targetStatuses = [
+      APPLICATION_STATUS.WRITE_OFF_PENDING,
+      APPLICATION_STATUS.PARTIAL_WRITE_OFF,
+      APPLICATION_STATUS.WRITE_OFF_AUDITING,
+      APPLICATION_STATUS.WRITE_OFF_REVIEWING,
+      APPLICATION_STATUS.SETTLED,
+    ];
+    if (!targetStatuses.includes(app.status)) return;
+
+    const tabBtn = $("#tab-btn-writeoff");
+    if (!tabBtn) return;
+    if (tabBtn.classList.contains("hidden")) tabBtn.classList.remove("hidden");
+    // 直接切換成 writeoff 面板（避免依賴使用者手動點擊）
+    const panels = document.querySelectorAll(".tab-panel");
+    const tabs = document.querySelectorAll(".tab");
+    tabs.forEach((t) => {
+      const isWriteoff = t.getAttribute("data-tab") === "writeoff";
+      t.classList.toggle("active", isWriteoff);
+      if (isWriteoff) t.classList.remove("hidden");
+    });
+    panels.forEach((p) => {
+      const isWriteoff = p.getAttribute("data-panel") === "writeoff";
+      p.classList.toggle("active", isWriteoff);
+      p.classList.toggle("hidden", !isWriteoff);
+    });
+    updateTabsSubmitVisibility();
+  }
+
+  // ===== PREPAY：核銷浮窗（Writeoff Modal）=====
+  /** 母單核銷來源明細：優先 details，否則 items；無資料時給一筆備用列 */
+  function getMotherWriteoffSourceRows(mother) {
+    if (!mother) return [];
+    const fromDetails = mother.details;
+    if (Array.isArray(fromDetails) && fromDetails.length > 0) return fromDetails;
+    const fromItems = mother.items;
+    if (Array.isArray(fromItems) && fromItems.length > 0) return fromItems;
+    const total = getApplicationTotal(mother);
+    return [
+      {
+        purpose: "其他費用",
+        remarkNo: "",
+        payAmount: total,
+        untaxed: total,
+        tax: 0,
+      },
+    ];
+  }
+
+  function getLineOriginalAmount(row) {
+    if (!row) return 0;
+    if (row.payAmount != null && row.payAmount !== "") return parseNum(String(row.payAmount));
+    return parseNum(String(row.untaxed || 0)) + parseNum(String(row.tax || 0));
+  }
+
+  /** 該母單項目已被核銷／送審中的金額（待審核 + 已完成） */
+  function getWrittenOffAmountForMotherLine(motherId, lineIndex) {
+    if (!motherId) return 0;
+    return applications
+      .filter((a) => {
+        if (a.parentId !== motherId || a.voided) return false;
+        const idx = a.writeoffSourceLineIndex;
+        if (idx == null || idx === "") return lineIndex === 0;
+        return Number(idx) === lineIndex;
+      })
+      .filter(
+        (a) =>
+          a.status === APPLICATION_STATUS.PAID ||
+          a.status === APPLICATION_STATUS.PENDING_APPROVAL ||
+          a.status === "submitted"
+      )
+      .reduce((s, a) => s + parseNum(String(a.writeoffInvoiceAmount ?? getApplicationTotal(a))), 0);
+  }
+
+  /** 選定母單明細列之可核銷餘額（原申請金額 − 已送審／已核銷） */
+  function getRemainingForMotherLine(mother, lineIndex) {
+    const rows = getMotherWriteoffSourceRows(mother);
+    const row = rows[lineIndex];
+    if (!row) return 0;
+    const orig = getLineOriginalAmount(row);
+    const used = getWrittenOffAmountForMotherLine(mother.applicationId, lineIndex);
+    return Math.max(0, orig - used);
+  }
+
+  function populateWriteoffSourceDetailSelect(mother) {
+    const sel = $("#writeoff-source-detail");
+    if (!sel) return;
+    sel.innerHTML = "";
+    const rows = getMotherWriteoffSourceRows(mother);
+    rows.forEach((row, idx) => {
+      const purpose = row.purpose || "其他費用";
+      const remarkRaw = (row.remarkNo || "").trim();
+      const remarkLabel = remarkRaw || "—";
+      const orig =
+        row.payAmount != null && row.payAmount !== ""
+          ? parseNum(String(row.payAmount))
+          : parseNum(String(row.untaxed || 0)) + parseNum(String(row.tax || 0));
+      const opt = document.createElement("option");
+      opt.value = String(idx);
+      opt.textContent = `[${purpose}] 備註單號: ${remarkLabel} (原申請金額: ${formatMoney(orig)})`;
+      sel.appendChild(opt);
+    });
+    if (rows.length) sel.selectedIndex = 0;
+  }
+
+  /** 子單核銷明細：供 details 與 items（表格）共用欄位 */
+  function buildWriteoffChildDetailFromSelection(selectedLine, payAmountForLine, voucherNo, attachmentName) {
+    const purpose = selectedLine.purpose || "其他費用";
+    const remarkNo = selectedLine.remarkNo || "";
+    const periodStart = selectedLine.periodStart || "";
+    const periodEnd = selectedLine.periodEnd || "";
+    const note = "(系統自動產生) 關聯母單核銷";
+    const amt = parseNum(String(payAmountForLine));
+    const detailRow = {
+      purpose,
+      remarkNo,
+      voucherStyle: "發票",
+      voucherNo: voucherNo,
+      payAmount: amt,
+      note,
+    };
+    const itemRow = {
+      ...detailRow,
+      periodStart,
+      periodEnd,
+      taxType: "未稅",
+      untaxed: amt,
+      tax: 0,
+      fileName: attachmentName,
+    };
+    return { detailRow, itemRow };
+  }
+
+  function openWriteoffModal() {
+    const app = getCurrentApplication();
+    if (!app || !isPrepayMother(app)) return;
+    const modal = $("#writeoff-modal");
+    if (!modal) return;
+
+    populateWriteoffSourceDetailSelect(app);
+    $("#writeoff-actual-invoice").value = "";
+    $("#writeoff-voucher-no").value = "";
+    $("#writeoff-attachment").value = "";
+    $("#writeoff-is-final").checked = false;
+    recalcWriteoffDiffHint();
+
+    modal.hidden = false;
+    document.body.style.overflow = "hidden";
+    $("#writeoff-actual-invoice")?.focus();
+  }
+
+  function closeWriteoffModal() {
+    const modal = $("#writeoff-modal");
+    if (modal) modal.hidden = true;
+    // 若 detail modal 還在顯示，避免把底層鎖定解除
+    if ($("#detail-modal") && !$("#detail-modal").hidden) {
+      document.body.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "";
+    }
+  }
+
+  function recalcWriteoffDiffHint() {
+    const hint = $("#writeoff-diff-hint");
+    const app = getCurrentApplication();
+    if (!hint || !app) return;
+
+    const sel = $("#writeoff-source-detail");
+    const idx = sel ? parseInt(String(sel.value || "0"), 10) : 0;
+    const idxSafe = Number.isNaN(idx) ? 0 : idx;
+    const rows = getMotherWriteoffSourceRows(app);
+    const row = rows[idxSafe];
+    const orig = row ? getLineOriginalAmount(row) : 0;
+    const lineRemaining = getRemainingForMotherLine(app, idxSafe);
+    const invoice = parseNum($("#writeoff-actual-invoice").value);
+    if (!invoice) {
+      hint.textContent = `本項目原申請金額：${formatMoney(orig)}；可核銷餘額：${formatMoney(lineRemaining)}（未輸入實際發票／核銷金額）`;
+      return;
+    }
+
+    const displayDiff = orig - invoice;
+    const diffLabel = displayDiff >= 0 ? `+${formatMoney(displayDiff)}` : formatMoney(displayDiff);
+    hint.textContent = `本項目可核銷餘額：${formatMoney(lineRemaining)}｜差額（原申請金額 − 本次核銷金額）：${formatMoney(orig)} − ${formatMoney(invoice)} = ${diffLabel}`;
+  }
+
+  function submitWriteoff() {
+    const mother = getCurrentApplication();
+    if (!mother || !isPrepayMother(mother)) return;
+    if (!canShowPrepayWriteoffTab(mother)) {
+      alert("母單須先經財務審核通過後，才開放核銷。");
+      return;
+    }
+    const canMotherWriteoff =
+      mother.status === APPLICATION_STATUS.WRITE_OFF_PENDING ||
+      mother.status === APPLICATION_STATUS.PARTIAL_WRITE_OFF ||
+      mother.status === APPLICATION_STATUS.WRITE_OFF_AUDITING;
+    if (!canMotherWriteoff) {
+      alert("目前母單狀態不可新增核銷。");
+      return;
+    }
+    const invoice = parseNum($("#writeoff-actual-invoice").value);
+    if (!invoice || invoice <= 0) {
+      alert("請輸入實際發票總金額（> 0）");
+      $("#writeoff-actual-invoice")?.focus();
+      return;
+    }
+
+    const writeoffVoucherNo = ($("#writeoff-voucher-no").value || "").trim();
+    if (!writeoffVoucherNo) {
+      alert("請填寫實際發票號碼（憑證號碼）");
+      $("#writeoff-voucher-no")?.focus();
+      return;
+    }
+
+    const fileInput = $("#writeoff-attachment");
+    const attachmentName = fileInput?.files?.[0]?.name || "";
+    if (!attachmentName) {
+      alert("請上傳發票照片（附件）");
+      fileInput?.focus();
+      return;
+    }
+
+    const sourceRows = getMotherWriteoffSourceRows(mother);
+    const detailSel = $("#writeoff-source-detail");
+    const selVal = detailSel?.value;
+    if (selVal === undefined || selVal === null || selVal === "") {
+      alert("請選擇要核銷的母單項目");
+      detailSel?.focus();
+      return;
+    }
+    const srcIdx = parseInt(String(selVal), 10);
+    if (Number.isNaN(srcIdx) || srcIdx < 0 || srcIdx >= sourceRows.length) {
+      alert("母單項目選擇無效，請重新選擇");
+      detailSel?.focus();
+      return;
+    }
+    const selectedMotherLine = sourceRows[srcIdx];
+    const lineRemaining = getRemainingForMotherLine(mother, srcIdx);
+
+    const isFinal = !!$("#writeoff-is-final")?.checked;
+    const diff = invoice - lineRemaining;
+    const EPS = 0.000001;
+
+    const createChild = ({ type, amount }) => {
+      const childId = generateApplicationId();
+      const childPayCategory =
+        type === "GENERAL" || type === "REFUND" ? PAYMENT_TYPE.GENERAL : PAYMENT_TYPE.PREPAY;
+
+      const { detailRow, itemRow } = buildWriteoffChildDetailFromSelection(
+        selectedMotherLine,
+        amount,
+        writeoffVoucherNo,
+        attachmentName
+      );
+      const childItems = [itemRow];
+      const childDetails = [detailRow];
+
+      applications.unshift({
+        applicationId: childId,
+        parentId: mother.applicationId,
+        type,
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+        status: APPLICATION_STATUS.PENDING_APPROVAL,
+        voided: false,
+        remainingBalance: 0,
+        writeoffInvoiceAmount: invoice,
+        writeoffIsFinal: isFinal,
+        writeoffSourceLineIndex: srcIdx,
+        master: {
+          ...mother.master,
+          payCategory: childPayCategory,
+          totalPayment: amount,
+          expectedDate: mother.master?.expectedDate || "",
+          writeoffVoucherNo,
+          writeoffAttachmentName: attachmentName,
+        },
+        items: childItems,
+        details: childDetails,
+      });
+      return childId;
+    };
+
+    // 情境判斷（A/B/C/D）：差額以「所選母單項目之可核銷餘額」為基準
+    if (!isFinal) {
+      if (invoice > lineRemaining) {
+        alert("未勾選結清時，實際發票金額不可大於此母單項目之可核銷餘額。");
+        return;
+      }
+      createChild({ type: "WRITE_OFF", amount: invoice });
+    } else if (Math.abs(diff) <= EPS) {
+      createChild({
+        type: "WRITE_OFF",
+        amount: invoice,
+      });
+    } else if (diff > 0) {
+      createChild({ type: "GENERAL", amount: diff });
+    } else {
+      createChild({
+        type: "REFUND",
+        amount: Math.abs(diff),
+      });
+    }
+
+    const motherIdxAfter = applications.findIndex((x) => x.applicationId === mother.applicationId);
+    if (motherIdxAfter < 0) return;
+    applications[motherIdxAfter].status = APPLICATION_STATUS.WRITE_OFF_AUDITING;
+
+    saveApplications();
+    closeWriteoffModal();
+
+    // 更新畫面（核銷紀錄/剩餘金額/按鈕顯示）
+    const updatedMother = applications.find((x) => x.applicationId === mother.applicationId);
+    if (!updatedMother) return;
+    currentApplicationId = updatedMother.applicationId;
+    fillMasterForm(updatedMother.master || {});
+    renderDetailItems(updatedMother.items || []);
+    setFormMeta(updatedMother.applicationId, updatedMother.voided ? "voided" : updatedMother.status);
+    renderFormState();
+
+    // 確保使用者立刻看到剛新增的核銷紀錄（包含結算審核中）
+    activateWriteoffTabIfNeeded(updatedMother);
+  }
+
+  // ===== PREPAY：核銷結算審核（舊批次流程已停用，保留函數避免外部引用錯誤）=====
+  function approveWriteoffSettlement() {
+    return false;
+  }
+
+  function getMotherById(motherId) {
+    if (!motherId) return null;
+    return applications.find((x) => x.applicationId === motherId) || null;
+  }
+
+  /** 財務審核通過（母單：一般／預付首審；子單：核銷子單） */
+  function approveTicket(id) {
+    const app = applications.find((x) => x.applicationId === id);
+    if (!app || app.voided) return false;
+    if (app.parentId != null) return approveChildTicket(id);
+    return approveMotherTicket(id);
+  }
+
+  function approveMotherTicket(id) {
+    const app = applications.find((x) => x.applicationId === id);
+    if (!app || app.voided || app.parentId != null) return false;
+    if (app.status !== APPLICATION_STATUS.PENDING_APPROVAL && app.status !== "submitted") return false;
+
+    const current = $("#expectedDate")?.value || "";
+    const defaultDate = current || formatISODate(new Date());
+    const financeExpected = prompt("請輸入財務預期付款日（YYYY-MM-DD）", defaultDate);
+    if (!financeExpected) return false;
+    const ok = /^\d{4}-\d{2}-\d{2}$/.test(financeExpected.trim());
+    if (!ok) {
+      alert("日期格式錯誤，請輸入 YYYY-MM-DD");
+      return false;
+    }
+    $("#expectedDate").value = financeExpected.trim();
+    clearExpectedDateError();
+
+    // 審核通過後一律先進「待付款」，由財務於列表點「完成付款」並回填實際付款日後才轉為已完成（或預付則進入待核銷）
+    const targetStatus = APPLICATION_STATUS.PAYMENT_PENDING;
+
+    currentApplicationId = id;
+    upsertCurrentApplication(targetStatus);
+
+    const idx = applications.findIndex((x) => x.applicationId === id);
+    if (idx >= 0) {
+      applications[idx].reviewedAt = nowIso();
+      applications[idx].reviewNote = applications[idx].reviewNote || "";
+      saveApplications();
+    }
+    return true;
+  }
+
+  /** 財務審核通過（核銷子單）：此時才扣母單餘額 */
+  function approveChildTicket(id) {
+    const childIdx = applications.findIndex((x) => x.applicationId === id);
+    if (childIdx < 0) return false;
+    const child = applications[childIdx];
+    if (child.voided || child.parentId == null) return false;
+    if (child.status !== APPLICATION_STATUS.PENDING_APPROVAL && child.status !== "submitted") return false;
+
+    const motherIdx = applications.findIndex((x) => x.applicationId === child.parentId);
+    if (motherIdx < 0) return false;
+
+    const inv = parseNum(String(child.writeoffInvoiceAmount ?? getApplicationTotal(child)));
+    if (inv <= 0) return false;
+
+    const mother = applications[motherIdx];
+    const motherRem = getRemainingBalanceForApp(mother);
+    const newRem = Math.max(0, motherRem - inv);
+    applications[motherIdx].remainingBalance = newRem;
+
+    applications[childIdx].status = APPLICATION_STATUS.PAID;
+    applications[childIdx].reviewedAt = nowIso();
+
+    if (newRem > 0) {
+      applications[motherIdx].status = APPLICATION_STATUS.WRITE_OFF_PENDING;
+    } else {
+      // 母單未核銷餘額已歸零：核銷子單皆通過後應為「已完成」，不再卡在「待核銷」
+      applications[motherIdx].status = APPLICATION_STATUS.PAID;
+    }
+
+    saveApplications();
+    renderFormState();
+    return true;
+  }
+
+  /** 財務審核不通過 */
+  function rejectTicket(id) {
+    const app = applications.find((x) => x.applicationId === id);
+    if (!app || app.voided) return false;
+    if (app.parentId != null) return rejectChildTicket(id);
+    return rejectMotherTicket(id);
+  }
+
+  function rejectMotherTicket(id) {
+    const app = applications.find((x) => x.applicationId === id);
+    if (!app || app.voided || app.parentId != null) return false;
+    if (app.status !== APPLICATION_STATUS.PENDING_APPROVAL && app.status !== "submitted") return false;
+
+    const note = prompt("請輸入審核不通過原因（必填）");
+    if (!note || !note.trim()) {
+      alert("審核原因不可空白");
+      return false;
+    }
+
+    currentApplicationId = id;
+    upsertCurrentApplication(APPLICATION_STATUS.DRAFT);
+    const idx = applications.findIndex((x) => x.applicationId === id);
+    if (idx >= 0) {
+      applications[idx].reviewNote = note.trim();
+      applications[idx].reviewedAt = nowIso();
+      saveApplications();
+    }
+    return true;
+  }
+
+  function rejectChildTicket(id) {
+    const childIdx = applications.findIndex((x) => x.applicationId === id);
+    if (childIdx < 0) return false;
+    const child = applications[childIdx];
+    if (child.voided || child.parentId == null) return false;
+    if (child.status !== APPLICATION_STATUS.PENDING_APPROVAL && child.status !== "submitted") return false;
+
+    const note = prompt("請輸入審核不通過原因（必填）");
+    if (!note || !note.trim()) {
+      alert("退件原因不可空白");
+      return false;
+    }
+
+    applications[childIdx].status = APPLICATION_STATUS.WRITE_OFF_REJECTED;
+    applications[childIdx].reviewNote = note.trim();
+    applications[childIdx].reviewedAt = nowIso();
+
+    const motherIdx = applications.findIndex((x) => x.applicationId === child.parentId);
+    if (motherIdx >= 0 && applications[motherIdx].status === APPLICATION_STATUS.WRITE_OFF_AUDITING) {
+      applications[motherIdx].status = APPLICATION_STATUS.WRITE_OFF_PENDING;
+    }
+
+    saveApplications();
+    renderFormState();
+    return true;
   }
 
   function openMasterCreateModal() {
@@ -596,23 +1281,27 @@
     $("#applicant").value = applicant;
     $("#applyDate").value = applyDate;
     syncExpectedPaymentDate();
-    const dt = validateExpectedPaymentDate();
-    if (!dt.ok) {
-      showExpectedDateError(dt.msg);
+    const vr = validateMasterFieldsComplete({ forSubmit: false });
+    if (!vr.ok) {
       closeMasterCreateModal();
-      $("#expectedDate")?.focus();
+      applyMasterValidationResult(vr);
       return;
     }
+    clearExpectedDateError();
 
     const appId = generateApplicationId();
     currentApplicationId = appId;
+    const master = collectMasterForm();
     applications.unshift({
       applicationId: appId,
       createdAt: nowIso(),
       updatedAt: nowIso(),
       status: APPLICATION_STATUS.DRAFT,
       voided: false,
-      master: collectMasterForm(),
+      parentId: null,
+      type: null,
+      remainingBalance: master.payCategory === PAYMENT_TYPE.PREPAY ? master.totalPayment : null,
+      master,
       items: [],
     });
     saveApplications();
@@ -650,6 +1339,27 @@
     $("#application-form-page").classList.remove("hidden");
   }
 
+  /** 列表列：母單操作欄按鈕條件（集中業務規則，供 renderApplicationList 使用） */
+  function renderActionButtonsForParent(parent) {
+    const canEdit =
+      !parent.voided &&
+      (parent.status === APPLICATION_STATUS.DRAFT || parent.status === APPLICATION_STATUS.REJECTED);
+    const canVoid =
+      !parent.voided &&
+      (parent.status === APPLICATION_STATUS.DRAFT || parent.status === APPLICATION_STATUS.REJECTED);
+    const canView = !parent.voided;
+    const canWriteoffGo =
+      !parent.voided &&
+      parent.master?.payCategory === PAYMENT_TYPE.PREPAY &&
+      (parent.status === APPLICATION_STATUS.WRITE_OFF_PENDING ||
+        parent.status === APPLICATION_STATUS.PARTIAL_WRITE_OFF);
+    const canComplete =
+      !parent.voided &&
+      (parent.status === APPLICATION_STATUS.PAYMENT_PENDING ||
+        parent.status === APPLICATION_STATUS.APPROVED);
+    return { canEdit, canVoid, canView, canWriteoffGo, canComplete };
+  }
+
   function getFilteredApplications() {
     const applicant = ($("#filter-applicant").value || "").trim().toLowerCase();
     const from = $("#filter-date-from").value;
@@ -666,79 +1376,153 @@
 
   function renderApplicationList() {
     const body = $("#application-list-body");
-    const rows = getFilteredApplications();
-    if (!rows.length) {
-      body.innerHTML = '<tr><td colspan="10" style="color:#8c8c8c">目前無資料</td></tr>';
+    const filtered = getFilteredApplications();
+    if (!filtered.length) {
+      body.innerHTML = '<tr><td colspan="11" style="color:#8c8c8c">目前無資料</td></tr>';
       return;
     }
-    body.innerHTML = rows
-      .map((a) => {
-        const total = (a.items || []).reduce((s, x) => s + parseNum(String(x.payAmount || 0)), 0);
-        const itemCount = (a.items || []).length;
-        const statusKey = a.voided ? "voided" : a.status;
-        const statusClass =
-          statusKey === "voided"
-            ? "voided"
-            : statusKey === APPLICATION_STATUS.DRAFT
-              ? "draft"
-              : statusKey === APPLICATION_STATUS.PENDING_APPROVAL || statusKey === "submitted"
-                ? "pending"
-                : statusKey === APPLICATION_STATUS.APPROVED
-                  ? "approved"
-                  : statusKey === APPLICATION_STATUS.PAID
-                    ? "paid"
-                  : statusKey === APPLICATION_STATUS.REJECTED
-                    ? "rejected"
-                    : "";
-        const statusText = statusToLabel(statusKey);
-        const rowCls = a.voided ? "row-voided" : "";
-        const actualPaymentDate = a.paidAt || a.actualPaymentDate || "";
-        const canEdit =
-          !a.voided &&
-          (a.status === APPLICATION_STATUS.DRAFT ||
-            a.status === APPLICATION_STATUS.REJECTED);
-        const canVoid =
-          !a.voided &&
-          (a.status === APPLICATION_STATUS.DRAFT ||
-            a.status === APPLICATION_STATUS.REJECTED);
-        const canView =
-          !a.voided &&
-          (a.status === APPLICATION_STATUS.PENDING_APPROVAL ||
-            a.status === "submitted" ||
-            a.status === APPLICATION_STATUS.APPROVED ||
-            a.status === APPLICATION_STATUS.PAID);
-        const canComplete =
-          !a.voided && a.status === APPLICATION_STATUS.APPROVED;
-        return `<tr class="${rowCls}" data-app-id="${escapeHtml(a.applicationId)}">
-          <td>${escapeHtml(a.applicationId)}</td>
-          <td>${escapeHtml(a.master?.applicant || "")}</td>
-          <td>${escapeHtml(a.master?.applyDate || "")}</td>
-          <td>${itemCount}</td>
-          <td class="cell-num">${formatMoney(total)}</td>
-          <td>${escapeHtml(formatDateTime(a.createdAt))}</td>
-          <td>${escapeHtml(a.master?.expectedDate || "")}</td>
-          <td>${escapeHtml(actualPaymentDate || "")}</td>
-          <td><span class="status-pill ${statusClass}">${statusText}</span></td>
-          <td class="col-actions">
-            ${canEdit ? '<button type="button" class="link btn-row-edit">編輯</button>' : ''}
-            ${canVoid ? '<button type="button" class="link btn-row-void">作廢</button>' : ''}
-            ${canView ? '<button type="button" class="link btn-row-view">檢視</button>' : ''}
-            ${canComplete ? '<button type="button" class="link btn-row-complete">完成付款</button>' : ''}
-          </td>
-        </tr>`;
-      })
-      .join("");
 
+    // ===== 先把 filtered 分組 =====
+    const idSet = new Set(filtered.map((a) => String(a.applicationId)));
+    const childrenByParent = {};
+    filtered.forEach((a) => {
+      if (a?.parentId == null) return;
+      const pid = String(a.parentId).trim();
+      if (!pid) return;
+      childrenByParent[pid] = childrenByParent[pid] || [];
+      childrenByParent[pid].push(a);
+    });
+    Object.keys(childrenByParent).forEach((pid) => {
+      childrenByParent[pid].sort((x, y) => String(y.createdAt || "").localeCompare(String(x.createdAt || "")));
+    });
+
+    const isRoot = (a) => a?.parentId == null || !idSet.has(String(a.parentId));
+    const roots = filtered.filter(isRoot);
+
+    // 產生 parent/child HTML（child 預設收合）
+    const html = [];
+    roots.forEach((parent) => {
+      const parentId = String(parent.applicationId);
+      const children = childrenByParent[parentId] || [];
+      const aHasChildren = children.length > 0;
+
+      // parent row
+      const itemsTotal = (parent.items || []).reduce((s, x) => s + parseNum(String(x.payAmount || 0)), 0);
+      const masterTotal = parseNum(String(parent.master?.totalPayment ?? 0));
+      const total = itemsTotal > 0 ? itemsTotal : masterTotal;
+      const itemCount = (parent.items || []).length;
+
+      const statusKey = parent.voided ? "voided" : parent.status;
+      const statusClass = statusPillClass(statusKey);
+      const statusText = statusToLabel(statusKey);
+      const rowCls = parent.voided ? "row-voided" : "";
+      const actualPaymentDate = parent.paidAt || parent.actualPaymentDate || "";
+
+      const { canEdit, canVoid, canView, canWriteoffGo, canComplete } = renderActionButtonsForParent(parent);
+
+      html.push(`<tr class="${rowCls} parent-row" data-row-type="parent" data-app-id="${escapeHtml(parent.applicationId)}" data-parent-id="${escapeHtml(parent.applicationId)}">
+        <td>${aHasChildren ? '<span class="row-arrow" aria-hidden="true">▶</span>' : ''}${escapeHtml(parent.applicationId)}</td>
+        <td>${escapeHtml(payCategoryToLabel(parent.master?.payCategory))}</td>
+        <td>${escapeHtml(parent.master?.applicant || "")}</td>
+        <td>${escapeHtml(parent.master?.applyDate || "")}</td>
+        <td>${itemCount}</td>
+        <td class="cell-num">${formatMoney(total)}</td>
+        <td>${escapeHtml(formatDateTime(parent.createdAt))}</td>
+        <td>${escapeHtml(parent.master?.expectedDate || "")}</td>
+        <td>${escapeHtml(actualPaymentDate || "")}</td>
+        <td><span class="status-pill ${statusClass}">${statusText}</span></td>
+        <td class="col-actions">
+          ${canEdit ? '<button type="button" class="link btn-row-edit">編輯</button>' : ''}
+          ${canVoid ? '<button type="button" class="link btn-row-void">作廢</button>' : ''}
+          ${canView ? '<button type="button" class="link btn-row-view">檢視</button>' : ''}
+          ${canWriteoffGo ? '<button type="button" class="link btn-row-writeoff">進行核銷</button>' : ''}
+          ${canComplete ? '<button type="button" class="link btn-row-complete">完成付款</button>' : ''}
+        </td>
+      </tr>`);
+
+      // child rows
+      children.forEach((child) => {
+        const childItemsTotal = (child.items || []).reduce((s, x) => s + parseNum(String(x.payAmount || 0)), 0);
+        const childMasterTotal = parseNum(String(child.master?.totalPayment ?? 0));
+        const childTotal = childItemsTotal > 0 ? childItemsTotal : childMasterTotal;
+        const childItemCount = (child.items || []).length;
+
+        const childStatusKey = child.voided ? "voided" : child.status;
+        const childStatusClass = statusPillClass(childStatusKey);
+        const childStatusText = statusToLabel(childStatusKey);
+        const childRowCls = child.voided ? "row-voided" : "";
+        const childActualPaymentDate = child.paidAt || child.actualPaymentDate || "";
+        const childViewBtn = !child.voided ? '<button type="button" class="link btn-row-view">檢視</button>' : "";
+        html.push(`<tr class="${childRowCls} child-row is-collapsed" data-row-type="child" data-app-id="${escapeHtml(child.applicationId)}" data-parent-id="${escapeHtml(parent.applicationId)}">
+          <td><span class="child-indent" aria-hidden="true">└</span>${escapeHtml(child.applicationId)}</td>
+          <td>${escapeHtml(payCategoryToLabel(child.master?.payCategory))}</td>
+          <td>${escapeHtml(child.master?.applicant || "")}</td>
+          <td>${escapeHtml(child.master?.applyDate || "")}</td>
+          <td>${childItemCount}</td>
+          <td class="cell-num">${formatMoney(childTotal)}</td>
+          <td>${escapeHtml(formatDateTime(child.createdAt))}</td>
+          <td>${escapeHtml(child.master?.expectedDate || "")}</td>
+          <td>${escapeHtml(childActualPaymentDate || "")}</td>
+          <td><span class="status-pill ${childStatusClass}">${childStatusText}</span></td>
+          <td class="col-actions">${childViewBtn}</td>
+        </tr>`);
+      });
+    });
+
+    body.innerHTML = html.join("");
+
+    // ===== 事件綁定 =====
+    // Parent：點擊切換子單顯示
+    body.querySelectorAll("tr[data-row-type='parent']").forEach((tr) => {
+      const parentId = tr.getAttribute("data-parent-id");
+      const arrowEl = tr.querySelector(".row-arrow");
+
+      tr.addEventListener("click", (e) => {
+        if (e.target && e.target.closest && e.target.closest("button")) return;
+        const safePid = String(parentId).replace(/"/g, '\\"');
+        const childRows = body.querySelectorAll(`tr.child-row[data-parent-id="${safePid}"]`);
+        const anyCollapsed = Array.from(childRows).some((cr) => cr.classList.contains("is-collapsed"));
+        const nextCollapsed = !anyCollapsed;
+
+        childRows.forEach((cr) => {
+          cr.classList.toggle("is-collapsed", nextCollapsed);
+        });
+        if (arrowEl) arrowEl.textContent = nextCollapsed ? "▶" : "▽";
+      });
+    });
+
+    // Buttons + child row click
     body.querySelectorAll("tr[data-app-id]").forEach((tr) => {
       const appId = tr.getAttribute("data-app-id");
-      tr.addEventListener("click", (e) => {
-        if (e.target.closest("button")) return;
+      const rowType = tr.getAttribute("data-row-type");
+
+      tr.querySelector(".btn-row-edit")?.addEventListener("click", (e) => {
+        e.stopPropagation();
         openApplication(appId);
       });
-      tr.querySelector(".btn-row-edit")?.addEventListener("click", () => openApplication(appId));
-      tr.querySelector(".btn-row-void")?.addEventListener("click", () => voidApplication(appId));
-      tr.querySelector(".btn-row-view")?.addEventListener("click", () => openApplication(appId));
-      tr.querySelector(".btn-row-complete")?.addEventListener("click", () => completePaymentApplication(appId));
+      tr.querySelector(".btn-row-void")?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        voidApplication(appId);
+      });
+      tr.querySelector(".btn-row-view")?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openApplication(appId);
+      });
+      tr.querySelector(".btn-row-writeoff")?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openApplicationForWriteoff(appId);
+      });
+      tr.querySelector(".btn-row-complete")?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        completePaymentApplication(appId);
+      });
+
+      if (rowType === "child") {
+        tr.addEventListener("click", (e) => {
+          if (e.target && e.target.closest && e.target.closest("button")) return;
+          openApplication(appId);
+        });
+      }
     });
   }
 
@@ -752,6 +1536,21 @@
     setMasterCreated(true);
     setFormMeta(app.applicationId, app.voided ? "voided" : app.status);
     renderFormState();
+
+    // PREPAY：若處於待核銷/部分核銷，預設切到「核銷紀錄」面板
+    activateWriteoffTabIfNeeded(app);
+  }
+
+  function switchToWriteoffTab() {
+    const tabBtn = $("#tab-btn-writeoff");
+    if (tabBtn && !tabBtn.classList.contains("hidden")) tabBtn.click();
+  }
+
+  /** 列表「進行核銷」：開啟明細並切到核銷紀錄分頁 */
+  function openApplicationForWriteoff(appId) {
+    openApplication(appId);
+    const app = getCurrentApplication();
+    if (app && isPrepayMother(app) && canShowPrepayWriteoffTab(app)) switchToWriteoffTab();
   }
 
   function voidApplication(appId) {
@@ -769,7 +1568,10 @@
   function completePaymentApplication(appId) {
     const app = applications.find((x) => x.applicationId === appId);
     if (!app) return;
-    if (app.status !== APPLICATION_STATUS.APPROVED) {
+    if (
+      app.status !== APPLICATION_STATUS.PAYMENT_PENDING &&
+      app.status !== APPLICATION_STATUS.APPROVED
+    ) {
       alert("目前狀態不可完成付款");
       return;
     }
@@ -786,7 +1588,13 @@
 
     app.paidAt = actualDate.trim();
     app.actualPaymentDate = actualDate.trim();
-    app.status = APPLICATION_STATUS.PAID;
+    // PREPAY 完成付款後，進入「待核銷」而非直接「已完成付款」
+    if (app.master?.payCategory === PAYMENT_TYPE.PREPAY) {
+      app.status = APPLICATION_STATUS.WRITE_OFF_PENDING;
+      app.remainingBalance = getApplicationTotal(app);
+    } else {
+      app.status = APPLICATION_STATUS.PAID;
+    }
     app.paidCompletedAt = nowIso();
 
     saveApplications();
@@ -801,19 +1609,46 @@
   function upsertCurrentApplication(statusOverride) {
     if (!currentApplicationId) return;
     const master = collectMasterForm();
-    const items = getDetailItemsFromTable();
+    let items = getDetailItemsFromTable();
     const idx = applications.findIndex((x) => x.applicationId === currentApplicationId);
     if (idx < 0) return;
-    const nextStatus = statusOverride || applications[idx].status || APPLICATION_STATUS.DRAFT;
+
+    const prevApp = applications[idx];
+    const nextStatus = statusOverride || prevApp.status || APPLICATION_STATUS.DRAFT;
+    const isPrepayMother = prevApp.parentId == null && master.payCategory === PAYMENT_TYPE.PREPAY;
+    const prevStatus = prevApp.status;
+
+    let totalPayment = items.reduce((s, x) => s + parseNum(String(x.payAmount || 0)), 0);
+    const isWriteoffPhaseMother = isPrepayMother && [
+      APPLICATION_STATUS.WRITE_OFF_PENDING,
+      APPLICATION_STATUS.PARTIAL_WRITE_OFF,
+      APPLICATION_STATUS.WRITE_OFF_AUDITING,
+      APPLICATION_STATUS.WRITE_OFF_REVIEWING,
+      APPLICATION_STATUS.SETTLED,
+    ].includes(prevStatus);
+
+    // PREPAY 核銷階段：避免因為 writeoff tab 切換後畫面明細為空，誤把母單 totalPayment 覆寫成 0
+    if (isWriteoffPhaseMother && (!items || items.length === 0) && prevApp.items && prevApp.items.length > 0) {
+      items = prevApp.items;
+      totalPayment = parseNum(String(prevApp.master?.totalPayment ?? 0));
+    }
+
     applications[idx] = {
       ...applications[idx],
-      master: { ...master, totalPayment: items.reduce((s, x) => s + parseNum(String(x.payAmount || 0)), 0) },
+      master: { ...master, totalPayment },
       items,
       status: nextStatus,
       updatedAt: nowIso(),
     };
     if (statusOverride === APPLICATION_STATUS.PENDING_APPROVAL) {
       applications[idx].submittedAt = nowIso();
+    }
+    // PREPAY 母單在送出前/修改期間，remainingBalance 以「總金額」初始化/更新
+    if (
+      isPrepayMother &&
+      (prevStatus === APPLICATION_STATUS.DRAFT || prevStatus === APPLICATION_STATUS.REJECTED)
+    ) {
+      applications[idx].remainingBalance = totalPayment;
     }
     saveApplications();
     setFormMeta(currentApplicationId, applications[idx].status);
@@ -1040,6 +1875,9 @@
       clearDetailModalForm();
     }
 
+    // PREPAY：套用憑證號碼顯示/隱藏與憑證樣式限制
+    applyScenarioToDetailModalFields();
+
     if (modal) modal.hidden = false;
     document.body.style.overflow = "hidden";
     $("#modal-purpose")?.focus();
@@ -1089,12 +1927,15 @@
         return;
       }
     }
-    if (!d.voucherNo) {
+    // 預付（PREPAY）母單：憑證號碼不必填（核銷補單時會在 writeoff modal 收集）
+    const isPrepay = app?.master?.payCategory === PAYMENT_TYPE.PREPAY;
+    if (!d.voucherNo && !isPrepay) {
       const msg = d.voucherStyle === "發票" ? "請填寫發票號碼" : "請填寫憑證號碼";
       alert(msg);
       $("#modal-voucherNo")?.focus();
       return;
     }
+    if (isPrepay) d.voucherNo = "";
     if (d.untaxed <= 0) {
       alert("請填寫未稅金額（須大於 0）");
       $("#modal-untaxed")?.focus();
@@ -1241,9 +2082,12 @@
       tab.addEventListener("click", () => {
         const target = tab.getAttribute("data-tab");
         tabs.forEach((t) => t.classList.toggle("active", t === tab));
-        panels.forEach((p) =>
-          p.classList.toggle("active", p.getAttribute("data-panel") === target)
-        );
+        panels.forEach((p) => {
+          const isActive = p.getAttribute("data-panel") === target;
+          p.classList.toggle("active", isActive);
+          p.classList.toggle("hidden", !isActive);
+        });
+        updateTabsSubmitVisibility();
       });
     });
   }
@@ -1267,21 +2111,25 @@
         $("#applicant").value = applicant || DEFAULT_APPLICANT;
 
         syncExpectedPaymentDate();
-        const dt = validateExpectedPaymentDate();
-        if (!dt.ok) {
-          showExpectedDateError(dt.msg);
-          $("#expectedDate")?.focus();
+        const vr = validateMasterFieldsComplete({ forSubmit: false });
+        if (!vr.ok) {
+          applyMasterValidationResult(vr);
           return;
         }
+        clearExpectedDateError();
 
         currentApplicationId = generateApplicationId();
+        const master = collectMasterForm();
         applications.unshift({
           applicationId: currentApplicationId,
           createdAt: nowIso(),
           updatedAt: nowIso(),
           status: APPLICATION_STATUS.DRAFT,
           voided: false,
-          master: collectMasterForm(),
+          parentId: null,
+          type: null,
+          remainingBalance: master.payCategory === PAYMENT_TYPE.PREPAY ? master.totalPayment : null,
+          master,
           items: [],
         });
         saveApplications();
@@ -1515,6 +2363,54 @@
     return { ok: true };
   }
 
+  /** 主單欄位必填檢核（建立前／送出前共用） */
+  function validateMasterFieldsComplete({ forSubmit } = {}) {
+    const applicant = ($("#applicant").value || "").trim();
+    if (!applicant) return { ok: false, msg: "請填寫申請人", focus: "#applicant" };
+    const applyDate = $("#applyDate").value;
+    if (!applyDate) return { ok: false, msg: "請填寫申請日", focus: "#applyDate" };
+    const payCategory = $("#payCategory").value;
+    if (!payCategory) return { ok: false, msg: "請選擇申請款項情境", focus: "#payCategory" };
+    const vendor = ($("#vendor-hidden").value || $("#vendor-search").value || "").trim();
+    if (!vendor) return { ok: false, msg: "請選擇或輸入付款名稱（供應商）", focus: "#vendor-search" };
+    const currency = $("#currency").value;
+    if (!currency) return { ok: false, msg: "請選擇付款幣別", focus: "#currency" };
+    const payMethod = $("#payMethod").value;
+    if (!payMethod) return { ok: false, msg: "請選擇付款方式", focus: "#payMethod" };
+    const transferFee = $("#transferFee").value;
+    if (!transferFee) return { ok: false, msg: "請選擇匯款手續費", focus: "#transferFee" };
+
+    const dt = validateExpectedPaymentDate();
+    if (!dt.ok) return { ok: false, msg: dt.msg, focus: "#expectedDate" };
+
+    if (forSubmit) {
+      const total = parseNum($("#totalPayment").value || "");
+      if (!total || total <= 0) {
+        return { ok: false, msg: "總付款金額須大於 0，請先完成款項憑證明細", focus: "#totalPayment" };
+      }
+      const n = document.querySelectorAll("#detail-body tr[data-row-id]").length;
+      if (n === 0) return { ok: false, msg: "請至少新增一筆款項憑證明細", focusDetail: true };
+    }
+    return { ok: true };
+  }
+
+  function applyMasterValidationResult(r) {
+    if (r.ok) return true;
+    alert(r.msg);
+    if (r.focusDetail) {
+      const tabBtn = $("#tab-btn-detail");
+      if (tabBtn && !tabBtn.classList.contains("hidden")) tabBtn.click();
+      $("#panel-detail")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      $("#btn-add-row")?.focus();
+      return false;
+    }
+    $("#panel-master")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (r.focus === "#expectedDate") showExpectedDateError(r.msg);
+    else clearExpectedDateError();
+    if (r.focus) $(r.focus)?.focus();
+    return false;
+  }
+
   function onExpectedDateUserInput() {
     const type = $("#payCategory").value;
     if (type !== PAYMENT_TYPE.URGENT && type !== PAYMENT_TYPE.PREPAY) return;
@@ -1642,6 +2538,50 @@
 
     applyScenarioInfo();
     recalcPettyCapHint();
+    applyScenarioToDetailModalFields();
+  }
+
+  function applyScenarioToDetailModalFields() {
+    const app = getCurrentApplication();
+    const isPrepay = !!app?.master && app.master.payCategory === PAYMENT_TYPE.PREPAY;
+
+    const voucherNoLabel = document.querySelector('label[for="modal-voucherNo"]');
+    const voucherNoInput = $("#modal-voucherNo");
+    const selVoucherStyle = $("#modal-voucherStyle");
+    if (!voucherNoLabel || !voucherNoInput || !selVoucherStyle) return;
+
+    // PREPAY：隱藏/灰化「憑證號碼」，且限制憑證樣式只能「合約/報價單」
+    if (isPrepay) {
+      if (!voucherNoLabel.dataset.originalText) voucherNoLabel.dataset.originalText = voucherNoLabel.textContent;
+      voucherNoLabel.textContent = "憑證號碼（預付款無需填寫）";
+      voucherNoLabel.style.opacity = "0.6";
+      voucherNoInput.readOnly = true;
+      voucherNoInput.classList.add("readonly-field");
+      voucherNoInput.placeholder = "預付款無需填寫";
+      voucherNoInput.value = "";
+
+      const allowed = ["合約", "報價單"];
+      selVoucherStyle.innerHTML = allowed
+        .map((v) => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`)
+        .join("");
+      if (!allowed.includes(selVoucherStyle.value)) {
+        selVoucherStyle.value = allowed[0];
+      }
+      applyTaxRuleByVoucher(selVoucherStyle.value);
+      recalcModal();
+    } else {
+      if (voucherNoLabel.dataset.originalText) voucherNoLabel.textContent = voucherNoLabel.dataset.originalText;
+      voucherNoLabel.style.opacity = "";
+      voucherNoInput.readOnly = false;
+      voucherNoInput.classList.remove("readonly-field");
+      voucherNoInput.placeholder = "";
+
+      // 還原憑證樣式選項
+      selVoucherStyle.innerHTML = VOUCHER_OPTIONS.map(
+        (v) => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`
+      ).join("");
+      recalcModal();
+    }
   }
 
   function recalcPettyCapHint() {
@@ -1757,9 +2697,12 @@
     clearDetailTable();
     setMasterCreated(false);
     setFormMeta("", "draft");
+    // 新建/切換時先把 PREPAY 核銷 UI 隱藏，避免殘留
+    applyWriteoffUI(null);
     initPaymentMethod();
     const masterTab = document.querySelector('.tab[data-tab="master"]');
     if (masterTab) masterTab.click();
+    renderFormState();
   }
 
   function initMasterAutoSave() {
@@ -1804,6 +2747,13 @@
         return;
       }
 
+      const vr = validateMasterFieldsComplete({ forSubmit: true });
+      if (!vr.ok) {
+        applyMasterValidationResult(vr);
+        return;
+      }
+      clearExpectedDateError();
+
       // 零用金上限再做一次保護（避免繞過明細儲存防呆）
       if (getScenario() === PAYMENT_TYPE.PETTY_CASH) {
         const sum = parseNum($("#totalPayment").value || "");
@@ -1815,16 +2765,6 @@
           return;
         }
       }
-
-      const dt = validateExpectedPaymentDate();
-      if (!dt.ok) {
-        showExpectedDateError(dt.msg);
-        const panel = $("#panel-master");
-        if (panel) panel.scrollIntoView({ behavior: "smooth", block: "start" });
-        $("#expectedDate")?.focus();
-        return;
-      }
-      clearExpectedDateError();
       upsertCurrentApplication(APPLICATION_STATUS.PENDING_APPROVAL);
       alert("已送出申請，待財務審核。\n總金額：" + ($("#totalPayment").value || ""));
       showListPage();
@@ -1833,28 +2773,7 @@
     $("#btn-review-approve")?.addEventListener("click", () => {
       const app = getCurrentApplication();
       if (!app || app.voided) return;
-      if (app.status !== APPLICATION_STATUS.PENDING_APPROVAL && app.status !== "submitted") {
-        alert("目前狀態不可審核通過");
-        return;
-      }
-      const current = $("#expectedDate")?.value || "";
-      const defaultDate = current || formatISODate(new Date());
-      const financeExpected = prompt("請輸入財務預期付款日（YYYY-MM-DD）", defaultDate);
-      if (!financeExpected) return;
-      const ok = /^\d{4}-\d{2}-\d{2}$/.test(financeExpected.trim());
-      if (!ok) {
-        alert("日期格式錯誤，請輸入 YYYY-MM-DD");
-        return;
-      }
-      $("#expectedDate").value = financeExpected.trim();
-      // 財務預期付款日由財務人員回壓決定，這裡只確認格式正確即可。
-      clearExpectedDateError();
-
-      upsertCurrentApplication(APPLICATION_STATUS.APPROVED);
-      const idx = applications.findIndex((x) => x.applicationId === currentApplicationId);
-      if (idx >= 0) applications[idx].reviewNote = applications[idx].reviewNote || "";
-      applications[idx].reviewedAt = nowIso();
-      saveApplications();
+      if (!approveTicket(app.applicationId)) return;
       alert("審核通過");
       showListPage();
     });
@@ -1862,25 +2781,11 @@
     $("#btn-review-reject")?.addEventListener("click", () => {
       const app = getCurrentApplication();
       if (!app || app.voided) return;
-      if (app.status !== APPLICATION_STATUS.PENDING_APPROVAL && app.status !== "submitted") {
-        alert("目前狀態不可審核不通過");
-        return;
-      }
-      const note = prompt("請輸入審核不通過原因（必填）");
-      if (!note || !note.trim()) {
-        alert("審核原因不可空白");
-        return;
-      }
-      upsertCurrentApplication(APPLICATION_STATUS.REJECTED);
-      const idx = applications.findIndex((x) => x.applicationId === currentApplicationId);
-      if (idx >= 0) {
-        applications[idx].reviewNote = note.trim();
-        applications[idx].reviewedAt = nowIso();
-      }
-      saveApplications();
-      alert("已回覆：審核不通過（可重新修改並送出）");
+      if (!rejectTicket(app.applicationId)) return;
+      alert(app.parentId != null ? "已退件" : "已退回草稿（可重新修改並送出）");
       showListPage();
     });
+
 
     $("#btn-back-list").addEventListener("click", () => {
       if (isMasterCreated && currentApplicationId) upsertCurrentApplication();
@@ -1902,9 +2807,28 @@
       $(sel).addEventListener("input", renderApplicationList);
       $(sel).addEventListener("change", renderApplicationList);
     });
+
+    // PREPAY：核銷浮窗事件綁定
+    $("#btn-add-writeoff")?.addEventListener("click", () => openWriteoffModal());
+    $("#writeoff-modal-submit")?.addEventListener("click", () => submitWriteoff());
+    $("#writeoff-modal-cancel")?.addEventListener("click", () => closeWriteoffModal());
+    $("#writeoff-modal-close")?.addEventListener("click", () => closeWriteoffModal());
+    $("#writeoff-actual-invoice")?.addEventListener("input", () => recalcWriteoffDiffHint());
+    $("#writeoff-is-final")?.addEventListener("change", () => recalcWriteoffDiffHint());
+    $("#writeoff-source-detail")?.addEventListener("change", () => recalcWriteoffDiffHint());
+    $("#btn-review-writeoff-approve")?.addEventListener("click", () => {
+      showListPage();
+    });
+    document.addEventListener("keydown", (e) => {
+      const modal = $("#writeoff-modal");
+      if (e.key === "Escape" && modal && !modal.hidden) closeWriteoffModal();
+    });
   }
 
   function init() {
+    if (typeof console !== "undefined" && console.info) {
+      console.info(`[付款申請模組] 版本 ${APP_VERSION}`);
+    }
     loadVendorsFromStorage();
     loadPettyCashLimitFromStorage();
     loadApplications();
